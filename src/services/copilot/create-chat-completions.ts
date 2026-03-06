@@ -8,6 +8,7 @@ import { fetchCopilotWithRetry } from "~/services/copilot/request"
 
 export const createChatCompletions = async (
   payload: ChatCompletionsPayload,
+  initiatorOverride?: "agent" | "user",
 ) => {
   const enableVision = payload.messages.some(
     (x) =>
@@ -15,21 +16,17 @@ export const createChatCompletions = async (
       && x.content?.some((x) => x.type === "image_url"),
   )
 
-  // Agent/user check for X-Initiator header
-  // Determine if any message is from an agent ("assistant" or "tool")
-  // Refactor `isAgentCall` logic to check only the last message in the history rather than any message. This prevents valid user messages from being incorrectly flagged as agent calls due to previous assistant history, ensuring proper credit consumption for multi-turn conversations.
-  let isAgentCall = false
-  if (payload.messages.length > 0) {
-    const lastMessage = payload.messages.at(-1)
-    if (lastMessage) {
-      isAgentCall = ["assistant", "tool"].includes(lastMessage.role)
-    }
-  }
+  const lastMessage = payload.messages.at(-1)
+  const isAgentCall =
+    lastMessage !== undefined
+    && (lastMessage.role === "assistant" || lastMessage.role === "tool")
+
+  const initiator = initiatorOverride ?? (isAgentCall ? "agent" : "user")
 
   // Build headers and add X-Initiator
   const buildHeaders = () => ({
     ...copilotHeaders(state, enableVision),
-    "X-Initiator": isAgentCall ? "agent" : "user",
+    "X-Initiator": initiator,
   })
 
   const response = await fetchCopilotWithRetry({

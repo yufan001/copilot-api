@@ -30,6 +30,7 @@ function filterBetaHeader(header: string): string | undefined {
 export const createMessages = async (
   payload: AnthropicMessagesPayload,
   anthropicBetaHeader?: string,
+  initiatorOverride?: "agent" | "user",
 ): Promise<CreateMessagesReturn> => {
   const enableVision = payload.messages.some(
     (message) =>
@@ -37,14 +38,17 @@ export const createMessages = async (
       && message.content.some((block) => block.type === "image"),
   )
 
-  let isInitiateRequest = false
-  const lastMessage = payload.messages.at(-1)
-  if (lastMessage?.role === "user") {
-    isInitiateRequest =
+  const inferredInitiator = (): "agent" | "user" => {
+    const lastMessage = payload.messages.at(-1)
+    if (lastMessage?.role !== "user") return "user"
+    const hasUserInput =
       Array.isArray(lastMessage.content) ?
         lastMessage.content.some((block) => block.type !== "tool_result")
       : true
+    return hasUserInput ? "user" : "agent"
   }
+
+  const initiator = initiatorOverride ?? inferredInitiator()
 
   // Remove unsupported fields that Copilot API rejects
   // biome-ignore lint/performance/noDelete: cleaning up unsupported fields
@@ -53,7 +57,7 @@ export const createMessages = async (
   const buildHeaders = () => {
     const headers: Record<string, string> = {
       ...copilotHeaders(state, enableVision),
-      "X-Initiator": isInitiateRequest ? "user" : "agent",
+      "X-Initiator": initiator,
     }
 
     const filteredBeta =

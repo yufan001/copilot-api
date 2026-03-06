@@ -61,6 +61,8 @@ export async function handleCompletion(c: Context) {
 
   anthropicPayload.model = getMappedModel(anthropicPayload.model)
 
+  const initiator = inferAnthropicInitiatorFromLastMessage(anthropicPayload)
+
   // Merge tool_result and text blocks into tool_result to avoid consuming premium requests
   // (caused by skill invocations, edit hooks, plan or to do reminders)
   // e.g. {"role":"user","content":[{"type":"tool_result","content":"Launching skill: xxx"},{"type":"text","text":"xxx"}]}
@@ -69,22 +71,51 @@ export async function handleCompletion(c: Context) {
   sanitizeOrphanToolResults(anthropicPayload)
 
   if (shouldUseMessagesApi(anthropicPayload.model)) {
-    return await handleWithMessagesApi(c, anthropicPayload, anthropicBeta)
+    return await handleWithMessagesApi(c, anthropicPayload, {
+      anthropicBetaHeader: anthropicBeta,
+      initiatorOverride: initiator,
+    })
   }
 
   if (shouldUseResponsesApi(anthropicPayload.model)) {
-    return await handleWithResponsesApi(c, anthropicPayload)
+    return await handleWithResponsesApi(c, anthropicPayload, initiator)
   }
 
-  return await handleWithChatCompletions(c, anthropicPayload)
+  return await handleWithChatCompletions(c, anthropicPayload, initiator)
 }
 
 const RESPONSES_ENDPOINT = "/responses"
 const MESSAGES_ENDPOINT = "/v1/messages"
 
+export const inferAnthropicInitiatorFromLastMessage = (
+  anthropicPayload: AnthropicMessagesPayload,
+): "agent" | "user" => {
+  const lastMessage = anthropicPayload.messages.at(-1)
+  if (!lastMessage || lastMessage.role !== "user") {
+    return "user"
+  }
+
+  if (!Array.isArray(lastMessage.content)) {
+    return "user"
+  }
+
+  const hasToolResult = lastMessage.content.some(
+    (block) => block.type === "tool_result",
+  )
+  if (!hasToolResult) {
+    return "user"
+  }
+
+  const hasUnsupportedBlock = lastMessage.content.some(
+    (block) => block.type !== "tool_result" && block.type !== "text",
+  )
+  return hasUnsupportedBlock ? "user" : "agent"
+}
+
 const handleWithChatCompletions = async (
   c: Context,
   anthropicPayload: AnthropicMessagesPayload,
+  initiator: "agent" | "user",
 ) => {
   const openAIPayload = translateToOpenAI(anthropicPayload)
   logger.debug(
@@ -92,7 +123,7 @@ const handleWithChatCompletions = async (
     JSON.stringify(openAIPayload),
   )
 
-  const response = await createChatCompletions(openAIPayload)
+  const response = await createChatCompletions(openAIPayload, initiator)
 
   if (isNonStreaming(response)) {
     logger.debug(
@@ -144,6 +175,7 @@ const handleWithChatCompletions = async (
 const handleWithResponsesApi = async (
   c: Context,
   anthropicPayload: AnthropicMessagesPayload,
+  initiatorOverride: "agent" | "user",
 ) => {
   const responsesPayload =
     translateAnthropicMessagesToResponsesPayload(anthropicPayload)
@@ -152,10 +184,10 @@ const handleWithResponsesApi = async (
     JSON.stringify(responsesPayload),
   )
 
-  const { vision, initiator } = getResponsesRequestOptions(responsesPayload)
+  const { vision } = getResponsesRequestOptions(responsesPayload)
   const response = await createResponses(responsesPayload, {
     vision,
-    initiator,
+    initiator: initiatorOverride,
   })
 
   if (responsesPayload.stream && isAsyncIterable(response)) {
@@ -235,10 +267,20 @@ const stripThinkingBlocks = (payload: AnthropicMessagesPayload): void => {
 const handleWithMessagesApi = async (
   c: Context,
   anthropicPayload: AnthropicMessagesPayload,
-  anthropicBetaHeader?: string,
+  {
+    anthropicBetaHeader,
+    initiatorOverride,
+  }: {
+    anthropicBetaHeader: string | undefined
+    initiatorOverride: "agent" | "user"
+  },
 ) => {
   stripThinkingBlocks(anthropicPayload)
-  const response = await createMessages(anthropicPayload, anthropicBetaHeader)
+  const response = await createMessages(
+    anthropicPayload,
+    anthropicBetaHeader,
+    initiatorOverride,
+  )
 
   if (isAsyncIterable(response)) {
     logger.debug("Streaming response from Copilot (Messages API)")
@@ -359,9 +401,8 @@ export const sanitizeOrphanToolResults = (
       return {
         type: "text",
         text:
-          contentText.length > 0 ?
-            contentText
-          : "[tool_result without corresponding tool_use was removed]",
+          contentText
+          || "[tool_result without corresponding tool_use was removed]",
       }
     })
   }

@@ -2,7 +2,10 @@ import { describe, expect, test } from "bun:test"
 
 import type { AnthropicMessagesPayload } from "~/routes/messages/anthropic-types"
 
-import { sanitizeOrphanToolResults } from "../src/routes/messages/handler"
+import {
+  inferAnthropicInitiatorFromLastMessage,
+  sanitizeOrphanToolResults,
+} from "~/routes/messages/handler"
 
 describe("sanitizeOrphanToolResults", () => {
   test("keeps tool_result when matching previous tool_use exists", () => {
@@ -83,5 +86,51 @@ describe("sanitizeOrphanToolResults", () => {
     if (firstBlock.type === "text") {
       expect(firstBlock.text).toBe("Launching skill: remote-control")
     }
+  })
+})
+
+describe("inferAnthropicInitiatorFromLastMessage", () => {
+  test("returns agent for tool_result + text follow-up", () => {
+    const payload: AnthropicMessagesPayload = {
+      model: "claude-opus-4-6",
+      max_tokens: 1024,
+      messages: [
+        {
+          role: "assistant",
+          content: [{ type: "text", text: "working" }],
+        },
+        {
+          role: "user",
+          content: [
+            {
+              type: "tool_result",
+              tool_use_id: "toolu_missing",
+              content: "Launching skill: remote-control",
+            },
+            {
+              type: "text",
+              text: "Skill startup log",
+            },
+          ],
+        },
+      ],
+    }
+
+    expect(inferAnthropicInitiatorFromLastMessage(payload)).toBe("agent")
+  })
+
+  test("returns user for normal text prompt", () => {
+    const payload: AnthropicMessagesPayload = {
+      model: "claude-opus-4-6",
+      max_tokens: 1024,
+      messages: [
+        {
+          role: "user",
+          content: [{ type: "text", text: "hello" }],
+        },
+      ],
+    }
+
+    expect(inferAnthropicInitiatorFromLastMessage(payload)).toBe("user")
   })
 })
