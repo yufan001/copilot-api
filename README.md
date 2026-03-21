@@ -235,6 +235,17 @@ If `RATE_LIMIT` / `RATE_LIMIT_WAIT` are not set via environment variables, you c
 | `/usage` | `GET` | Copilot usage statistics and quota |
 | `/token` | `GET` | Current Copilot token |
 
+## Tool Support
+
+This project does not implement a full Claude Code / Codex tool protocol compatibility layer. Tool support is currently best-effort and limited to the tool shapes that GitHub Copilot accepts reliably.
+
+- **Well-supported**: standard `function` tools passed through OpenAI-compatible or Anthropic-compatible requests.
+- **Built-in Responses tools**: support exists for Copilot/OpenAI-style built-in tools such as `web_search`, `web_search_preview`, `file_search`, `code_interpreter`, `image_generation`, and `local_shell` when the upstream model/endpoint supports them.
+- **Special compatibility**: custom `apply_patch` is normalized into a `function` tool for better compatibility.
+- **Limited file editing compatibility**: common custom file-editing tool names such as `write`, `write_file`, `writefiles`, `edit`, `edit_file`, `multi_edit`, and `multiedit` are normalized into `function` tools so they are not dropped immediately by the proxy.
+- **Not guaranteed**: skill-specific tools used by Claude Code, Codex, `superpowers`, or other agent frameworks may still fail if they depend on client-specific schemas, result formats, or tool execution semantics that Copilot does not support upstream.
+- **Current limitation**: this proxy does not yet provide a complete end-to-end compatibility layer for all Claude Code or Codex file tools. If a skill depends on a proprietary tool contract, additional adapter work is still required.
+
 ## Using with Claude Code
 
 Configure Claude Code to use this proxy by creating a `.claude/settings.json` file:
