@@ -54,6 +54,7 @@ export async function handleCompletion(c: Context) {
   const response = await createChatCompletions(payload)
 
   if (isNonStreaming(response)) {
+    response.created = getEpochSec()
     logger.debug("Non-streaming response:", JSON.stringify(response))
     return c.json(response)
   }
@@ -61,6 +62,7 @@ export async function handleCompletion(c: Context) {
   logger.debug("Streaming response")
   return streamSSE(c, async (stream) => {
     for await (const chunk of response) {
+      chunk.created = getEpochSec()
       logger.debug("Streaming chunk:", JSON.stringify(chunk))
       await stream.writeSSE(chunk as SSEMessage)
     }
@@ -70,3 +72,5 @@ export async function handleCompletion(c: Context) {
 const isNonStreaming = (
   response: Awaited<ReturnType<typeof createChatCompletions>>,
 ): response is ChatCompletionResponse => Object.hasOwn(response, "choices")
+
+const getEpochSec = () => Math.round(Date.now() / 1000)
