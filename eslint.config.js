@@ -5,6 +5,11 @@ const baseConfig = config()
 export default [
   ...(Array.isArray(baseConfig) ? baseConfig : [baseConfig]),
   {
-    ignores: ["claude-plugin/**", "copilot-api/**"],
+    ignores: [
+      ".claude-plugin/**",
+      "claude-plugin/**",
+      "copilot-api/**",
+      "plugins/**",
+    ],
   },
 ]

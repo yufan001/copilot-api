@@ -273,6 +273,17 @@ volumes:
 
 更多选项：[Claude Code 设置](https://docs.anthropic.com/en/docs/claude-code/settings#environment-variables)
 
+### 可选：安装 copilot-api 的 Claude Code 插件
+
+如果您希望 Claude Code 在 `SubagentStart` hook 中注入一个额外 marker，帮助 `copilot-api` 更稳定地区分 initiator override，可以直接从本仓库安装可选插件：
+
+```bash
+/plugin marketplace add https://github.com/yuegongzi/copilot-api.git
+/plugin install copilot-api-subagent-marker@copilot-api-marketplace
+```
+
+这个插件只是一个轻量 hook 辅助层，不负责启动或管理 `copilot-api` 服务本身。服务端仍然建议按本文档中的 Docker 方式部署。
+
 ## 配置文件 (config.json)
 
 配置文件存储在容器内的 `/data/copilot-api/config.json`（通过 Docker volume 持久化）。

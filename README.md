@@ -273,6 +273,17 @@ This is the recommended way to route `haiku`, `sonnet`, `opus`, dated Claude mod
 
 More options: [Claude Code settings](https://docs.anthropic.com/en/docs/claude-code/settings#environment-variables)
 
+### Optional: install the copilot-api Claude Code plugin
+
+If you want Claude Code to inject an extra marker during the `SubagentStart` hook so `copilot-api` can more reliably distinguish initiator overrides, you can install the optional plugin directly from this repository:
+
+```bash
+/plugin marketplace add https://github.com/yuegongzi/copilot-api.git
+/plugin install copilot-api-subagent-marker@copilot-api-marketplace
+```
+
+This plugin is only a lightweight hook helper. It does not start or manage the `copilot-api` service itself, which should still be deployed separately via Docker as described above.
+
 ## Configuration (config.json)
 
 The configuration file is stored at `/data/copilot-api/config.json` inside the container (persisted via Docker volume).
