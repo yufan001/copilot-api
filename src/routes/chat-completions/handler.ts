@@ -62,7 +62,15 @@ export async function handleCompletion(c: Context) {
   logger.debug("Streaming response")
   return streamSSE(c, async (stream) => {
     for await (const chunk of response) {
-      chunk.created = getEpochSec()
+      if (chunk.data) {
+        try {
+          const parsed = JSON.parse(chunk.data) as Record<string, unknown>
+          parsed.created = getEpochSec()
+          chunk.data = JSON.stringify(parsed)
+        } catch {
+          // Keep original data if not valid JSON (e.g. "[DONE]")
+        }
+      }
       logger.debug("Streaming chunk:", JSON.stringify(chunk))
       await stream.writeSSE(chunk as SSEMessage)
     }
