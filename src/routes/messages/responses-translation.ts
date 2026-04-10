@@ -357,6 +357,12 @@ export const translateResponsesResultToAnthropic = (
     anthropicContent = contentBlocks
   }
 
+  // When response contains only thinking blocks (no text or tool_use),
+  // extract reasoning text as a text block fallback.
+  // This happens during compaction/summary where Copilot returns reasoning
+  // output without a message output item.
+  ensureTextBlockFallback(anthropicContent)
+
   const stopReason = mapResponsesStopReason(response)
 
   return {
@@ -642,4 +648,32 @@ const convertToolResultContent = (
   }
 
   return ""
+}
+
+/**
+ * When response contains only thinking blocks (no text or tool_use),
+ * extract reasoning text as a text block fallback.
+ * This happens during compaction/summary where Copilot returns reasoning
+ * output without a message output item.
+ */
+const ensureTextBlockFallback = (
+  blocks: Array<AnthropicAssistantContentBlock>,
+): void => {
+  const hasTextBlock = blocks.some((b) => b.type === "text")
+  const hasToolUse = blocks.some((b) => b.type === "tool_use")
+  if (hasTextBlock || hasToolUse) {
+    return
+  }
+
+  const thinkingText = blocks
+    .filter(
+      (b): b is AnthropicThinkingBlock =>
+        b.type === "thinking" && b.thinking !== THINKING_TEXT,
+    )
+    .map((b) => b.thinking)
+    .join("\n")
+
+  if (thinkingText.length > 0) {
+    blocks.push({ type: "text", text: thinkingText })
+  }
 }
