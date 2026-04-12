@@ -6,6 +6,19 @@ import { localOnlyMiddleware } from "~/routes/admin/middleware"
 
 const originalLocalAccessMode = process.env.LOCAL_ACCESS_MODE
 const originalLocalAccessPassword = process.env.LOCAL_ACCESS_PASSWORD
+const forbiddenCrossSiteResponse = {
+  error: {
+    message:
+      "Forbidden: Cross-site browser requests are blocked for local admin routes",
+    type: "forbidden",
+  },
+}
+const forbiddenLocalOnlyResponse = {
+  error: {
+    message: "Forbidden: Admin panel is only accessible from localhost",
+    type: "forbidden",
+  },
+}
 
 function createApp(): Hono {
   const app = new Hono()
@@ -72,19 +85,23 @@ async function requestWithPeerAddress({
   )
 }
 
-describe("localOnlyMiddleware", () => {
-  afterEach(() => {
-    if (originalLocalAccessMode === undefined) {
-      delete process.env.LOCAL_ACCESS_MODE
-    } else {
-      process.env.LOCAL_ACCESS_MODE = originalLocalAccessMode
-    }
+function restoreLocalAccessEnvironment(): void {
+  if (originalLocalAccessMode === undefined) {
+    delete process.env.LOCAL_ACCESS_MODE
+  } else {
+    process.env.LOCAL_ACCESS_MODE = originalLocalAccessMode
+  }
 
-    if (originalLocalAccessPassword === undefined) {
-      delete process.env.LOCAL_ACCESS_PASSWORD
-    } else {
-      process.env.LOCAL_ACCESS_PASSWORD = originalLocalAccessPassword
-    }
+  if (originalLocalAccessPassword === undefined) {
+    delete process.env.LOCAL_ACCESS_PASSWORD
+  } else {
+    process.env.LOCAL_ACCESS_PASSWORD = originalLocalAccessPassword
+  }
+}
+
+describe("localOnlyMiddleware peer checks", () => {
+  afterEach(() => {
+    restoreLocalAccessEnvironment()
   })
 
   test("allows 127.0.0.1", async () => {
@@ -132,12 +149,7 @@ describe("localOnlyMiddleware", () => {
     const response = await requestWithPeerAddress({ peerAddress: "10.0.0.5" })
 
     expect(response.status).toBe(403)
-    expect(await response.json()).toEqual({
-      error: {
-        message: "Forbidden: Admin panel is only accessible from localhost",
-        type: "forbidden",
-      },
-    })
+    expect(await response.json()).toEqual(forbiddenLocalOnlyResponse)
   })
 
   test("rejects spoofed X-Forwarded-For when peer is non-local", async () => {
@@ -149,12 +161,7 @@ describe("localOnlyMiddleware", () => {
     })
 
     expect(response.status).toBe(403)
-    expect(await response.json()).toEqual({
-      error: {
-        message: "Forbidden: Admin panel is only accessible from localhost",
-        type: "forbidden",
-      },
-    })
+    expect(await response.json()).toEqual(forbiddenLocalOnlyResponse)
   })
 
   test("rejects spoofed X-Real-IP when peer is non-local", async () => {
@@ -166,12 +173,13 @@ describe("localOnlyMiddleware", () => {
     })
 
     expect(response.status).toBe(403)
-    expect(await response.json()).toEqual({
-      error: {
-        message: "Forbidden: Admin panel is only accessible from localhost",
-        type: "forbidden",
-      },
-    })
+    expect(await response.json()).toEqual(forbiddenLocalOnlyResponse)
+  })
+})
+
+describe("localOnlyMiddleware browser and auth checks", () => {
+  afterEach(() => {
+    restoreLocalAccessEnvironment()
   })
 
   test("allows container bridge peers when docker localhost mode is enabled", async () => {
@@ -223,13 +231,7 @@ describe("localOnlyMiddleware", () => {
     })
 
     expect(response.status).toBe(403)
-    expect(await response.json()).toEqual({
-      error: {
-        message:
-          "Forbidden: Cross-site browser requests are blocked for local admin routes",
-        type: "forbidden",
-      },
-    })
+    expect(await response.json()).toEqual(forbiddenCrossSiteResponse)
   })
 
   test("rejects cross-site POST requests flagged by fetch metadata", async () => {
@@ -242,13 +244,21 @@ describe("localOnlyMiddleware", () => {
     })
 
     expect(response.status).toBe(403)
-    expect(await response.json()).toEqual({
-      error: {
-        message:
-          "Forbidden: Cross-site browser requests are blocked for local admin routes",
-        type: "forbidden",
+    expect(await response.json()).toEqual(forbiddenCrossSiteResponse)
+  })
+
+  test("rejects unsafe POST requests with opaque origin metadata", async () => {
+    const response = await requestWithPeerAddress({
+      peerAddress: "127.0.0.1",
+      method: "POST",
+      headers: {
+        origin: "null",
+        "sec-fetch-site": "none",
       },
     })
+
+    expect(response.status).toBe(403)
+    expect(await response.json()).toEqual(forbiddenCrossSiteResponse)
   })
 
   test("accepts lowercase basic auth scheme in container bridge mode", async () => {

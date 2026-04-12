@@ -347,20 +347,25 @@ export function isTrustedBrowserRequest({
     return false
   }
 
+  const normalizedOriginHeader = readStringValue(originHeader)
   const origin = parseUrlOrigin(originHeader)
-  if (origin) {
+  if (normalizedOriginHeader !== undefined) {
     return origin === expectedOrigin
   }
 
+  const normalizedRefererHeader = readStringValue(refererHeader)
   const refererOrigin = parseUrlOrigin(refererHeader)
-  if (refererOrigin) {
+  if (normalizedRefererHeader !== undefined) {
     return refererOrigin === expectedOrigin
   }
 
-  return (
-    secFetchSite === undefined
-    || secFetchSite === "same-origin"
-    || secFetchSite === "same-site"
-    || secFetchSite === "none"
-  )
+  if (secFetchSite !== undefined) {
+    return secFetchSite === "same-origin"
+  }
+
+  if (originHeader !== undefined || refererHeader !== undefined) {
+    return false
+  }
+
+  return true
 }
