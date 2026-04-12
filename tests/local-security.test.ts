@@ -151,6 +151,40 @@ describe("local security helpers", () => {
     ).toBe(false)
   })
 
+  test("rejects opaque-origin admin requests with Origin: null", () => {
+    expect(
+      isTrustedBrowserRequest({
+        hostHeader: "localhost:4141",
+        method: "POST",
+        originHeader: "null",
+        requestUrl: "http://localhost/admin/api/auth/device-code",
+        secFetchSiteHeader: "none",
+      }),
+    ).toBe(false)
+  })
+
+  test("allows unsafe requests when referer proves same-origin", () => {
+    expect(
+      isTrustedBrowserRequest({
+        hostHeader: "localhost:4141",
+        method: "POST",
+        refererHeader: "http://localhost:4141/admin",
+        requestUrl: "http://localhost/admin/api/auth/device-code",
+      }),
+    ).toBe(true)
+  })
+
+  test("rejects unsafe browser requests that only present fetch metadata", () => {
+    expect(
+      isTrustedBrowserRequest({
+        hostHeader: "localhost:4141",
+        method: "POST",
+        requestUrl: "http://localhost/admin/api/auth/device-code",
+        secFetchSiteHeader: "none",
+      }),
+    ).toBe(false)
+  })
+
   test("allows unsafe local requests without browser metadata for CLI clients", () => {
     expect(
       isTrustedBrowserRequest({
