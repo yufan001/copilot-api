@@ -18,6 +18,9 @@ services:
     environment:
       - PORT=${PORT:-4141}
       - HOST=0.0.0.0
+      - VERBOSE=true
+      - RATE_LIMIT=5
+      - RATE_LIMIT_WAIT=true
       - LOCAL_ACCESS_MODE=container-bridge
       - LOCAL_ACCESS_PASSWORD=${LOCAL_ACCESS_PASSWORD:?Set LOCAL_ACCESS_PASSWORD in your shell or .env before running docker compose up}
       # Optional: Enable verbose logging

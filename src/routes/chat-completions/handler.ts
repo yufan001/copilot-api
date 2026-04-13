@@ -3,6 +3,8 @@ import type { Context } from "hono"
 import consola from "consola"
 import { streamSSE, type SSEMessage } from "hono/streaming"
 
+import type { Model } from "~/services/copilot/get-models"
+
 import { getMappedModel } from "~/lib/config"
 import { createHandlerLogger } from "~/lib/logger"
 import { checkRateLimit } from "~/lib/rate-limit"
@@ -16,6 +18,7 @@ import {
 } from "~/services/copilot/create-chat-completions"
 
 const logger = createHandlerLogger("chat-completions-handler")
+const CHAT_COMPLETIONS_ENDPOINT = "/chat/completions"
 
 export async function handleCompletion(c: Context) {
   await checkRateLimit(state)
@@ -30,6 +33,14 @@ export async function handleCompletion(c: Context) {
   const selectedModel = state.models?.data.find(
     (model) => model.id === payload.model,
   )
+  const validationError = getChatCompletionsModelValidationError(
+    payload.model,
+    selectedModel,
+  )
+
+  if (validationError) {
+    return c.json({ error: validationError }, 400)
+  }
 
   // Calculate and display token count
   try {
@@ -82,3 +93,43 @@ const isNonStreaming = (
 ): response is ChatCompletionResponse => Object.hasOwn(response, "choices")
 
 const getEpochSec = () => Math.round(Date.now() / 1000)
+
+const getChatCompletionsModelValidationError = (
+  modelId: string,
+  selectedModel: Model | undefined,
+): {
+  code: string
+  message: string
+  type: "invalid_request_error"
+} | null => {
+  if (!state.models?.data) {
+    return null
+  }
+
+  if (!selectedModel) {
+    return {
+      message: `Model '${modelId}' is not available for this account. Check /v1/models or update your model mapping.`,
+      type: "invalid_request_error",
+      code: "model_not_found",
+    }
+  }
+
+  if (
+    Array.isArray(selectedModel.supported_endpoints)
+    && !selectedModel.supported_endpoints.includes(CHAT_COMPLETIONS_ENDPOINT)
+  ) {
+    const canUseResponses =
+      selectedModel.supported_endpoints.includes("/responses")
+
+    return {
+      message:
+        canUseResponses ?
+          "This model does not support the chat completions endpoint. Please choose a different model or use /v1/responses."
+        : "This model does not support the chat completions endpoint. Please choose a different model.",
+      type: "invalid_request_error",
+      code: "model_not_supported",
+    }
+  }
+
+  return null
+}

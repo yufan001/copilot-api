@@ -51,17 +51,12 @@ export async function forwardError(c: Context, error: unknown) {
 
   if (error instanceof HTTPError) {
     const errorText = await error.response.text()
-    let errorJson: unknown
-    try {
-      errorJson = JSON.parse(errorText)
-    } catch {
-      errorJson = errorText
-    }
-    consola.error("HTTP error:", errorJson)
+    const normalizedError = normalizeHTTPError(errorText)
+    consola.error("HTTP error:", normalizedError ?? errorText)
     return c.json(
       {
-        error: {
-          message: errorText,
+        error: normalizedError ?? {
+          message: errorText || error.message,
           type: "error",
         },
       },
@@ -78,4 +73,106 @@ export async function forwardError(c: Context, error: unknown) {
     },
     500,
   )
+}
+
+type NormalizedHTTPError = {
+  code?: string
+  message: string
+  param?: string
+  type: string
+}
+
+function normalizeHTTPError(errorText: string): NormalizedHTTPError | null {
+  return extractNormalizedHTTPError(parseJsonSafely(errorText))
+}
+
+function extractNormalizedHTTPError(
+  value: unknown,
+): NormalizedHTTPError | null {
+  if (typeof value === "string") {
+    return normalizeHTTPErrorString(value)
+  }
+
+  if (!isRecord(value)) {
+    return null
+  }
+
+  return normalizeHTTPErrorObject(value)
+}
+
+function normalizeHTTPErrorString(value: string): NormalizedHTTPError | null {
+  const message = value.trim()
+  if (!message) {
+    return null
+  }
+
+  const nestedParsed = parseJsonSafely(message)
+  if (nestedParsed !== message) {
+    const nestedError = extractNormalizedHTTPError(nestedParsed)
+    if (nestedError) {
+      return nestedError
+    }
+  }
+
+  return {
+    message,
+    type: "error",
+  }
+}
+
+function normalizeHTTPErrorObject(
+  value: Record<string, unknown>,
+): NormalizedHTTPError | null {
+  const container = getErrorContainer(value)
+  const messageValue = container.message
+
+  if (typeof messageValue !== "string") {
+    return null
+  }
+
+  const nestedMessage = normalizeHTTPErrorString(messageValue)
+  if (nestedMessage && nestedMessage.message !== messageValue) {
+    return mergeHTTPErrorFields(container, nestedMessage)
+  }
+
+  return mergeHTTPErrorFields(container, {
+    message: messageValue,
+    type: "error",
+  })
+}
+
+function mergeHTTPErrorFields(
+  container: Record<string, unknown>,
+  normalized: NormalizedHTTPError,
+): NormalizedHTTPError {
+  return {
+    ...normalized,
+    type: getStringField(container, "type") ?? normalized.type,
+    code: getStringField(container, "code") ?? normalized.code,
+    param: getStringField(container, "param") ?? normalized.param,
+  }
+}
+
+function getErrorContainer(
+  value: Record<string, unknown>,
+): Record<string, unknown> {
+  const errorValue = value.error
+  return isRecord(errorValue) ? errorValue : value
+}
+
+function getStringField(value: object, key: string): string | null {
+  const field = (value as Record<string, unknown>)[key]
+  return typeof field === "string" ? field : null
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object"
+}
+
+function parseJsonSafely(input: string): unknown {
+  try {
+    return JSON.parse(input)
+  } catch {
+    return input
+  }
 }
