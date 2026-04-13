@@ -12,3 +12,8 @@ node_modules/
 
 # build output
 dist/
+
+# local agent/tool artifacts
+.claude/
+.context/
+.playwright-mcp/

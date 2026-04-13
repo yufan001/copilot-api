@@ -4,6 +4,7 @@ export const adminHtml = `<!DOCTYPE html>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Copilot API - Dashboard</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='3' fill='%23161b22'/%3E%3Cpath fill='%2358a6ff' d='M8 2a4 4 0 0 1 4 4v1.5h1A1.5 1.5 0 0 1 14.5 9v3A1.5 1.5 0 0 1 13 13.5H3A1.5 1.5 0 0 1 1.5 12V9A1.5 1.5 0 0 1 3 7.5h1V6a4 4 0 0 1 4-4Zm0 1.5A2.5 2.5 0 0 0 5.5 6v1.5h5V6A2.5 2.5 0 0 0 8 3.5Z'/%3E%3C/svg%3E">
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
@@ -251,7 +252,8 @@ export const adminHtml = `<!DOCTYPE html>
           <div style="display:flex; gap:0.5rem; align-items:center;">
             <input class="select" id="mappingFrom" placeholder="From model" style="margin:0; flex:1;">
             <span style="color:#8b949e; font-size:1.2rem;">\u2192</span>
-            <select class="select" id="mappingTo" style="margin:0; flex:1;"><option value="">Loading models...</option></select>
+            <input class="select" id="mappingTo" list="mappingToOptions" placeholder="Target model" style="margin:0; flex:1;">
+            <datalist id="mappingToOptions"></datalist>
             <button class="btn btn-primary btn-sm" id="saveMappingBtn">Save</button>
             <button class="btn btn-sm" id="cancelMappingBtn">Cancel</button>
           </div>
@@ -301,6 +303,37 @@ export const adminHtml = `<!DOCTYPE html>
   <script>
     const API_BASE = '/admin/api';
     let pollInterval = null;
+    let authStatus = {
+      authenticated: false,
+      hasAccounts: false,
+      activeAccount: null,
+    };
+    function escHtml(s) {
+      return String(s)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    }
+    function renderCardEmptyState(elementId, message) {
+      document.getElementById(elementId).innerHTML = '<div class="empty-state">' + escHtml(message) + '</div>';
+    }
+    function getModelsUnavailableMessage() {
+      return authStatus.hasAccounts
+        ? 'Reconnect the active GitHub account to load models.'
+        : 'Add a GitHub account to load models.';
+    }
+    function getUsageUnavailableMessage() {
+      return authStatus.hasAccounts
+        ? 'Reconnect the active GitHub account to load usage data.'
+        : 'Add a GitHub account to load usage data.';
+    }
+    function getModelSuggestionPlaceholder() {
+      return authStatus.hasAccounts
+        ? 'Target model (reconnect account to load suggestions)'
+        : 'Target model (add account to load suggestions)';
+    }
     document.querySelectorAll('.tab').forEach(tab => {
       tab.addEventListener('click', () => {
         document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
@@ -378,17 +411,29 @@ export const adminHtml = `<!DOCTYPE html>
       try {
         const res = await fetch(API_BASE + '/auth/status');
         const data = await res.json();
+        authStatus = {
+          authenticated: Boolean(data.authenticated),
+          hasAccounts: Boolean(data.hasAccounts),
+          activeAccount: data.activeAccount || null,
+        };
         const dot = document.getElementById('statusDot');
         const text = document.getElementById('statusText');
-        if (data.authenticated) {
+        if (authStatus.authenticated) {
           dot.classList.add('online');
-          text.textContent = 'Connected as ' + (data.activeAccount?.login || 'Unknown');
+          text.textContent = 'Connected as ' + (authStatus.activeAccount?.login || 'Unknown');
         } else {
           dot.classList.remove('online');
           text.textContent = 'Not authenticated';
         }
+        return authStatus;
       } catch (e) {
+        authStatus = {
+          authenticated: false,
+          hasAccounts: false,
+          activeAccount: null,
+        };
         document.getElementById('statusText').textContent = 'Connection error';
+        return authStatus;
       }
     }
     function renderAccounts(data) {
@@ -398,12 +443,12 @@ export const adminHtml = `<!DOCTYPE html>
         return;
       }
       list.innerHTML = data.accounts.map(acc => '<li class="account-item ' + (acc.isActive ? 'active' : '') + '">' +
-        '<img class="account-avatar" src="' + (acc.avatarUrl || '') + '" alt="" onerror="this.style.display=\\'none\\'">' +
-        '<div class="account-info"><div class="account-name">' + acc.login + '</div><div class="account-type">' + acc.accountType + '</div></div>' +
+        '<img class="account-avatar" src="' + escHtml(acc.avatarUrl || '') + '" alt="" onerror="this.style.display=\\'none\\'">' +
+        '<div class="account-info"><div class="account-name">' + escHtml(acc.login) + '</div><div class="account-type">' + escHtml(acc.accountType) + '</div></div>' +
         (acc.isActive ? '<span class="account-badge">Active</span>' : '') +
         '<div class="account-actions">' +
-        (!acc.isActive ? '<button class="btn btn-sm" onclick="switchAccount(\\'' + acc.id + '\\')">Switch</button>' : '') +
-        '<button class="btn btn-sm btn-danger" onclick="deleteAccount(\\'' + acc.id + '\\', \\'' + acc.login + '\\')">Delete</button>' +
+        (!acc.isActive ? '<button class="btn btn-sm" data-action="switch" data-id="' + escHtml(acc.id) + '">Switch</button>' : '') +
+        '<button class="btn btn-sm btn-danger" data-action="delete-account" data-id="' + escHtml(acc.id) + '" data-login="' + escHtml(acc.login) + '">Delete</button>' +
         '</div></li>').join('');
     }
     async function switchAccount(id) {
@@ -426,11 +471,17 @@ export const adminHtml = `<!DOCTYPE html>
       const btn = document.getElementById('refreshModels');
       btn.classList.add('loading');
       try {
+        const status = await fetchStatus();
+        if (!status.authenticated) {
+          renderCardEmptyState('modelsList', getModelsUnavailableMessage());
+          return;
+        }
         const res = await fetch('/v1/models');
+        if (!res.ok) throw new Error('Failed to load models');
         const data = await res.json();
         renderModels(data);
       } catch (e) {
-        document.getElementById('modelsList').innerHTML = '<div class="empty-state">Failed to load models. Please add an account first.</div>';
+        renderCardEmptyState('modelsList', 'Failed to load models. Please try again.');
       } finally { btn.classList.remove('loading'); }
     }
     function renderModels(data) {
@@ -441,7 +492,7 @@ export const adminHtml = `<!DOCTYPE html>
       }
       container.innerHTML = data.data.map(model => {
         const isPremium = model.id.includes('o1') || model.id.includes('o3') || model.id.includes('claude');
-        return '<div class="model-card"><div class="model-name">' + model.id + '</div><div class="model-id">' + (model.object || 'model') + '</div>' +
+        return '<div class="model-card"><div class="model-name">' + escHtml(model.id) + '</div><div class="model-id">' + escHtml(model.object || 'model') + '</div>' +
           (isPremium ? '<span class="model-badge premium">Premium</span>' : '') + '</div>';
       }).join('');
     }
@@ -449,11 +500,17 @@ export const adminHtml = `<!DOCTYPE html>
       const btn = document.getElementById('refreshUsage');
       btn.classList.add('loading');
       try {
+        const status = await fetchStatus();
+        if (!status.authenticated) {
+          renderCardEmptyState('usageContent', getUsageUnavailableMessage());
+          return;
+        }
         const res = await fetch('/usage');
+        if (!res.ok) throw new Error('Failed to load usage');
         const data = await res.json();
         renderUsage(data);
       } catch (e) {
-        document.getElementById('usageContent').innerHTML = '<div class="empty-state">Failed to load usage data. Please add an account first.</div>';
+        renderCardEmptyState('usageContent', 'Failed to load usage data. Please try again.');
       } finally { btn.classList.remove('loading'); }
     }
     function renderUsage(data) {
@@ -545,6 +602,19 @@ export const adminHtml = `<!DOCTYPE html>
     document.getElementById('refreshModels').addEventListener('click', fetchModels);
     document.getElementById('refreshUsage').addEventListener('click', fetchUsage);
     document.getElementById('saveSettingsBtn').addEventListener('click', saveSettings);
+    document.addEventListener('click', (e) => {
+      if (!(e.target instanceof Element)) return;
+      const actionEl = e.target.closest('[data-action]');
+      if (!actionEl) return;
+      const { action, id, login, from } = actionEl.dataset;
+      if (action === 'switch' && id) {
+        switchAccount(id);
+      } else if (action === 'delete-account' && id) {
+        deleteAccount(id, login || '');
+      } else if (action === 'delete-mapping' && from) {
+        deleteMapping(from);
+      }
+    });
 
     fetchAccounts();
     fetchStatus();
@@ -569,9 +639,9 @@ export const adminHtml = `<!DOCTYPE html>
       }
       tbody.innerHTML = entries.map(([from, to]) =>
         '<tr style="border-bottom:1px solid #21262d;">' +
-        '<td style="padding:0.5rem 1rem; font-family:monospace;">' + from + '</td>' +
-        '<td style="padding:0.5rem 1rem; font-family:monospace;">' + to + '</td>' +
-        '<td style="padding:0.5rem 1rem;"><button class="btn btn-danger btn-sm" onclick="deleteMapping(\\''+from+'\\')">Delete</button></td>' +
+        '<td style="padding:0.5rem 1rem; font-family:monospace;">' + escHtml(from) + '</td>' +
+        '<td style="padding:0.5rem 1rem; font-family:monospace;">' + escHtml(to) + '</td>' +
+        '<td style="padding:0.5rem 1rem;"><button class="btn btn-danger btn-sm" data-action="delete-mapping" data-from="' + escHtml(from) + '">Delete</button></td>' +
         '</tr>'
       ).join('');
     }
@@ -585,14 +655,25 @@ export const adminHtml = `<!DOCTYPE html>
     }
     window.deleteMapping = deleteMapping;
     async function loadModelOptions() {
-      const sel = document.getElementById('mappingTo');
+      const input = document.getElementById('mappingTo');
+      const optionList = document.getElementById('mappingToOptions');
+      input.value = '';
+      optionList.innerHTML = '';
       try {
+        const status = await fetchStatus();
+        if (!status.authenticated) {
+          input.placeholder = getModelSuggestionPlaceholder();
+          return;
+        }
         const res = await fetch('/v1/models');
+        if (!res.ok) throw new Error('Failed to load model suggestions');
         const data = await res.json();
-        sel.innerHTML = '<option value="">Select target model</option>' +
-          (data.data || []).map(m => '<option value="' + m.id + '">' + m.id + '</option>').join('');
+        input.placeholder = 'Target model';
+        optionList.innerHTML = (data.data || [])
+          .map(m => '<option value="' + escHtml(m.id) + '"></option>')
+          .join('');
       } catch (e) {
-        sel.innerHTML = '<option value="">Failed to load models</option>';
+        input.placeholder = 'Target model (failed to load suggestions)';
       }
     }
     document.getElementById('addMappingBtn').addEventListener('click', () => {
