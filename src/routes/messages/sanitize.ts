@@ -1,14 +1,29 @@
+import consola from "consola"
+
 import type { AnthropicMessagesPayload } from "./anthropic-types"
 
 interface AnthropicToolLike {
+  type?: unknown
   name?: unknown
   description?: unknown
   input_schema?: unknown
 }
 
+const isServerTool = (tool: AnthropicToolLike): boolean =>
+  typeof tool.type === "string" && tool.type !== "custom"
+
 const sanitizeAnthropicTool = (
   tool: AnthropicToolLike,
 ): Record<string, unknown> => {
+  // Server-side tools (web_search_20250305, bash_*, text_editor_*, computer_*,
+  // etc.) carry a `type` discriminator plus config like `max_uses`,
+  // `allowed_domains`, `user_location`. Upstream is responsible for executing
+  // them and emitting server_tool_use / *_tool_result content blocks —
+  // forward them verbatim instead of stripping everything except name.
+  if (isServerTool(tool)) {
+    return { ...(tool as Record<string, unknown>) }
+  }
+
   const sanitized: Record<string, unknown> = {}
 
   if (typeof tool.name === "string") {
@@ -37,7 +52,46 @@ export function sanitizeAnthropicPayload(
     return
   }
 
-  payload.tools = payload.tools.map((tool) =>
-    sanitizeAnthropicTool(tool as AnthropicToolLike),
-  ) as unknown as AnthropicMessagesPayload["tools"]
+  // Idempotent: running this twice (handler.ts + create-messages.ts) yields
+  // the same payload.
+  payload.tools = payload.tools.map((tool) => {
+    const next = sanitizeAnthropicTool(tool as AnthropicToolLike)
+    if (isServerTool(tool as AnthropicToolLike)) {
+      consola.debug(
+        `Forwarding Anthropic server-side tool '${(tool as { type?: string }).type}' unchanged; upstream must support it.`,
+      )
+    }
+    return next
+  }) as unknown as AnthropicMessagesPayload["tools"]
+}
+
+// Drop Anthropic server-side tools from the payload. Only the native
+// Anthropic /v1/messages upstream can execute them — when routing through
+// Chat Completions or the Responses API, forwarding them would produce a
+// function-tool with only a `name` and confuse the backend. Returns the
+// removed tools for diagnostics.
+export function stripServerToolsForNonMessagesApi(
+  payload: AnthropicMessagesPayload,
+): void {
+  if (!Array.isArray(payload.tools) || payload.tools.length === 0) {
+    return
+  }
+
+  const kept: Array<unknown> = []
+  const dropped: Array<string> = []
+  for (const tool of payload.tools) {
+    if (isServerTool(tool as AnthropicToolLike)) {
+      dropped.push(String((tool as { type?: unknown }).type))
+      continue
+    }
+    kept.push(tool)
+  }
+
+  if (dropped.length > 0) {
+    consola.warn(
+      `Dropping Anthropic server-side tool(s) [${dropped.join(", ")}] — not supported on this upstream path.`,
+    )
+  }
+
+  payload.tools = kept as AnthropicMessagesPayload["tools"]
 }

@@ -1,4 +1,5 @@
 import consola from "consola"
+import { randomUUID } from "node:crypto"
 
 import {
   getExtraPromptForModel,
@@ -17,6 +18,7 @@ import {
   type ResponseOutputFunctionCall,
   type ResponseOutputItem,
   type ResponseOutputReasoning,
+  type ResponseOutputWebSearchCall,
   type ResponseReasoningBlock,
   type ResponseOutputRefusal,
   type ResponseOutputText,
@@ -56,12 +58,22 @@ export const translateAnthropicMessagesToResponsesPayload = (
     input.push(...translateMessage(message))
   }
 
-  const translatedTools = convertAnthropicTools(payload.tools)
-  const toolChoice = convertAnthropicToolChoice(payload.tool_choice)
+  const { tools: translatedTools, hasWebSearch } = convertAnthropicTools(
+    payload.tools,
+  )
+  const toolChoice = convertAnthropicToolChoice(
+    payload.tool_choice,
+    hasWebSearch,
+  )
 
   const { safetyIdentifier, promptCacheKey } = parseUserId(
     payload.metadata?.user_id,
   )
+
+  const include: Array<string> = ["reasoning.encrypted_content"]
+  if (hasWebSearch) {
+    include.push("web_search_call.action.sources")
+  }
 
   const responsesPayload: ResponsesPayload = {
     model: payload.model,
@@ -71,7 +83,7 @@ export const translateAnthropicMessagesToResponsesPayload = (
     top_p: payload.top_p ?? null,
     max_output_tokens: Math.max(payload.max_tokens, 12800),
     tools: translatedTools,
-    tool_choice: toolChoice,
+    tool_choice: toolChoice as ToolChoiceOptions | ToolChoiceFunction,
     metadata: payload.metadata ? { ...payload.metadata } : null,
     safety_identifier: safetyIdentifier,
     prompt_cache_key: promptCacheKey,
@@ -82,7 +94,7 @@ export const translateAnthropicMessagesToResponsesPayload = (
       effort: getReasoningEffortForModel(payload.model),
       summary: "detailed",
     },
-    include: ["reasoning.encrypted_content"],
+    include: include as ResponsesPayload["include"],
   }
 
   return responsesPayload
@@ -307,23 +319,54 @@ const translateSystemPrompt = (
 
 const convertAnthropicTools = (
   tools: Array<AnthropicTool> | undefined,
-): Array<Tool> | null => {
+): { tools: Array<Tool> | null; hasWebSearch: boolean } => {
   if (!tools || tools.length === 0) {
-    return null
+    return { tools: null, hasWebSearch: false }
   }
 
-  return tools.map((tool) => ({
-    type: "function",
-    name: tool.name,
-    parameters: tool.input_schema,
-    strict: false,
-    ...(tool.description ? { description: tool.description } : {}),
-  }))
+  let hasWebSearch = false
+  const result: Array<Tool> = []
+
+  for (const tool of tools) {
+    const toolType = (tool as { type?: unknown }).type
+    if (typeof toolType === "string" && toolType !== "custom") {
+      // Server-side tool — translate web_search_* to OpenAI Responses web_search_preview
+      if (toolType.startsWith("web_search")) {
+        hasWebSearch = true
+        const serverTool = tool as Record<string, unknown>
+        result.push({
+          type: "web_search_preview",
+          search_context_size:
+            (serverTool.search_context_size as string) || "medium",
+          user_location: serverTool.user_location,
+        } as unknown as Tool)
+      }
+      // Other server tools (bash, text_editor, computer) — skip, not supported
+      continue
+    }
+
+    // Custom tool — translate as function tool
+    result.push({
+      type: "function",
+      name: (tool as { name: string }).name,
+      parameters: (tool as { input_schema: Record<string, unknown> })
+        .input_schema,
+      strict: false,
+      ...((tool as { description?: string }).description ?
+        { description: (tool as { description?: string }).description }
+      : {}),
+    })
+  }
+
+  return { tools: result.length > 0 ? result : null, hasWebSearch }
 }
+
+const WEB_SEARCH_TOOL_NAMES = new Set(["web_search", "web_search_preview"])
 
 const convertAnthropicToolChoice = (
   choice: AnthropicMessagesPayload["tool_choice"],
-): ToolChoiceOptions | ToolChoiceFunction => {
+  hasWebSearch: boolean,
+): ToolChoiceOptions | ToolChoiceFunction | { type: "web_search_preview" } => {
   if (!choice) {
     return "auto"
   }
@@ -336,6 +379,13 @@ const convertAnthropicToolChoice = (
       return "required"
     }
     case "tool": {
+      if (
+        hasWebSearch
+        && choice.name
+        && WEB_SEARCH_TOOL_NAMES.has(choice.name)
+      ) {
+        return { type: "web_search_preview" }
+      }
       return choice.name ? { type: "function", name: choice.name } : "auto"
     }
     case "none": {
@@ -402,6 +452,11 @@ const mapOutputToAnthropicContent = (
         }
         break
       }
+      case "web_search_call": {
+        const wsBlocks = createWebSearchContentBlocks(item)
+        contentBlocks.push(...wsBlocks)
+        break
+      }
       case "message": {
         const combinedText = combineMessageTextContent(item.content)
         if (combinedText.length > 0) {
@@ -422,6 +477,35 @@ const mapOutputToAnthropicContent = (
   }
 
   return contentBlocks
+}
+
+const createWebSearchContentBlocks = (
+  wsItem: ResponseOutputWebSearchCall,
+): Array<AnthropicAssistantContentBlock> => {
+  const toolUseId = `srvtoolu_${randomUUID().replaceAll("-", "").slice(0, 24)}`
+  const query =
+    wsItem.action?.type === "search" ? (wsItem.action.query ?? "") : ""
+
+  const sources = wsItem.action?.sources ?? []
+  const resultContent = sources.map((s) => ({
+    type: "web_search_result" as const,
+    title: s.title,
+    url: s.url,
+  }))
+
+  return [
+    {
+      type: "server_tool_use" as const,
+      id: toolUseId,
+      name: "web_search",
+      input: { query },
+    },
+    {
+      type: "web_search_tool_result" as const,
+      tool_use_id: toolUseId,
+      content: resultContent.length > 0 ? resultContent : [],
+    },
+  ]
 }
 
 const combineMessageTextContent = (

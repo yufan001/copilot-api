@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto"
+
 import {
   type ResponseCompletedEvent,
   type ResponseCreatedEvent,
@@ -8,6 +10,7 @@ import {
   type ResponseIncompleteEvent,
   type ResponseOutputItemAddedEvent,
   type ResponseOutputItemDoneEvent,
+  type ResponseOutputWebSearchCall,
   type ResponseReasoningSummaryTextDeltaEvent,
   type ResponseReasoningSummaryTextDoneEvent,
   type ResponsesResult,
@@ -157,6 +160,14 @@ const handleOutputItemAdded = (
   state: ResponsesStreamState,
 ): Array<AnthropicStreamEventData> => {
   const events = new Array<AnthropicStreamEventData>()
+  const item = rawEvent.item
+
+  // Handle web_search_call: emit nothing at "added" time — we'll emit
+  // server_tool_use + web_search_tool_result on "done" when results are ready.
+  if (item.type === "web_search_call") {
+    return events
+  }
+
   const functionCallDetails = extractFunctionCallDetails(rawEvent)
   if (!functionCallDetails) {
     return events
@@ -193,6 +204,15 @@ const handleOutputItemDone = (
   const events = new Array<AnthropicStreamEventData>()
   const item = rawEvent.item
   const itemType = item.type
+
+  // Handle web_search_call completion — synthesize Anthropic server_tool_use + web_search_tool_result
+  if (itemType === "web_search_call") {
+    const wsItem = item
+    closeOpenBlocks(state, events)
+    emitWebSearchBlocks(wsItem, state, events)
+    return events
+  }
+
   if (itemType !== "reasoning") {
     return events
   }
@@ -584,6 +604,56 @@ const openThinkingBlockIfNeeded = (
   }
 
   return blockIndex
+}
+
+const emitWebSearchBlocks = (
+  wsItem: ResponseOutputWebSearchCall,
+  state: ResponsesStreamState,
+  events: Array<AnthropicStreamEventData>,
+) => {
+  const toolUseId = `srvtoolu_${randomUUID().replaceAll("-", "").slice(0, 24)}`
+  const query =
+    wsItem.action?.type === "search" ? (wsItem.action.query ?? "") : ""
+
+  // 1. server_tool_use block
+  const serverToolUseIndex = state.nextContentBlockIndex
+  state.nextContentBlockIndex += 1
+  events.push(
+    {
+      type: "content_block_start",
+      index: serverToolUseIndex,
+      content_block: {
+        type: "server_tool_use" as const,
+        id: toolUseId,
+        name: "web_search",
+        input: { query },
+      },
+    },
+    { type: "content_block_stop", index: serverToolUseIndex },
+  )
+
+  // 2. web_search_tool_result block
+  const sources = wsItem.action?.sources ?? []
+  const resultContent = sources.map((s) => ({
+    type: "web_search_result" as const,
+    title: s.title,
+    url: s.url,
+  }))
+
+  const resultIndex = state.nextContentBlockIndex
+  state.nextContentBlockIndex += 1
+  events.push(
+    {
+      type: "content_block_start",
+      index: resultIndex,
+      content_block: {
+        type: "web_search_tool_result",
+        tool_use_id: toolUseId,
+        content: resultContent.length > 0 ? resultContent : [],
+      },
+    },
+    { type: "content_block_stop", index: resultIndex },
+  )
 }
 
 const closeBlockIfOpen = (

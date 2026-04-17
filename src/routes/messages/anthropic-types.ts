@@ -59,6 +59,25 @@ export interface AnthropicThinkingBlock {
   signature: string
 }
 
+export interface AnthropicServerToolUseBlock {
+  type: "server_tool_use"
+  id: string
+  name: string
+  input: Record<string, unknown>
+}
+
+export interface AnthropicWebSearchResultBlock {
+  type: "web_search_result"
+  title: string
+  url: string
+}
+
+export interface AnthropicWebSearchToolResultBlock {
+  type: "web_search_tool_result"
+  tool_use_id: string
+  content: Array<AnthropicWebSearchResultBlock>
+}
+
 export type AnthropicUserContentBlock =
   | AnthropicTextBlock
   | AnthropicImageBlock
@@ -68,6 +87,8 @@ export type AnthropicAssistantContentBlock =
   | AnthropicTextBlock
   | AnthropicToolUseBlock
   | AnthropicThinkingBlock
+  | AnthropicServerToolUseBlock
+  | AnthropicWebSearchToolResultBlock
 
 export interface AnthropicUserMessage {
   role: "user"
@@ -81,11 +102,26 @@ export interface AnthropicAssistantMessage {
 
 export type AnthropicMessage = AnthropicUserMessage | AnthropicAssistantMessage
 
-export interface AnthropicTool {
+export interface AnthropicCustomTool {
   name: string
   description?: string
   input_schema: Record<string, unknown>
 }
+
+// Anthropic native server-side tools (web_search_20250305, bash_*,
+// text_editor_*, computer_*, etc.) — distinguished by having a `type` field.
+export interface AnthropicServerTool {
+  type: string
+  name: string
+  [key: string]: unknown
+}
+
+export type AnthropicTool = AnthropicCustomTool | AnthropicServerTool
+
+export const isAnthropicServerTool = (
+  tool: AnthropicTool,
+): tool is AnthropicServerTool =>
+  typeof (tool as { type?: unknown }).type === "string"
 
 export interface AnthropicResponse {
   id: string
@@ -135,6 +171,8 @@ export interface AnthropicContentBlockStartEvent {
         input: Record<string, unknown>
       })
     | { type: "thinking"; thinking: string }
+    | AnthropicServerToolUseBlock
+    | AnthropicWebSearchToolResultBlock
 }
 
 export interface AnthropicContentBlockDeltaEvent {

@@ -44,8 +44,9 @@ export async function handleCountTokens(c: Context) {
         const toolsLength = anthropicPayload.tools.length
         addToolSystemPromptCount = !anthropicPayload.tools.some(
           (tool) =>
-            tool.name.startsWith("mcp__")
-            || (tool.name === "Skill" && toolsLength === 1),
+            typeof tool.name === "string"
+            && (tool.name.startsWith("mcp__")
+              || (tool.name === "Skill" && toolsLength === 1)),
         )
       }
       if (addToolSystemPromptCount) {

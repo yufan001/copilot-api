@@ -48,6 +48,7 @@ export type ResponseIncludable =
   | "computer_call_output.output.image_url"
   | "reasoning.encrypted_content"
   | "code_interpreter_call.outputs"
+  | "web_search_call.action.sources"
 
 export interface Reasoning {
   effort?: "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | null
@@ -144,6 +145,7 @@ export type ResponseOutputItem =
   | ResponseOutputMessage
   | ResponseOutputReasoning
   | ResponseOutputFunctionCall
+  | ResponseOutputWebSearchCall
 
 export interface ResponseOutputMessage {
   id: string
@@ -173,6 +175,24 @@ export interface ResponseOutputFunctionCall {
   name: string
   arguments: string
   status?: "in_progress" | "completed" | "incomplete"
+}
+
+export interface WebSearchSource {
+  title: string
+  url: string
+}
+
+export interface ResponseOutputWebSearchCall {
+  id: string
+  type: "web_search_call"
+  status: string
+  action?: {
+    type: "search" | "open_page" | "find"
+    query?: string
+    url?: string
+    pattern?: string
+    sources?: Array<WebSearchSource>
+  } | null
 }
 
 export type ResponseOutputContentBlock =

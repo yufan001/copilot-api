@@ -302,14 +302,20 @@ function translateAnthropicToolsToOpenAI(
   if (!anthropicTools) {
     return undefined
   }
-  return anthropicTools.map((tool) => ({
-    type: "function",
-    function: {
-      name: tool.name,
-      description: tool.description,
-      parameters: tool.input_schema,
-    },
-  }))
+  return anthropicTools
+    .filter((tool) => {
+      const t = (tool as { type?: unknown }).type
+      return typeof t !== "string" || t === "custom"
+    })
+    .map((tool) => ({
+      type: "function",
+      function: {
+        name: (tool as { name: string }).name,
+        description: (tool as { description?: string }).description,
+        parameters: (tool as { input_schema: Record<string, unknown> })
+          .input_schema,
+      },
+    }))
 }
 
 function translateAnthropicToolChoiceToOpenAI(

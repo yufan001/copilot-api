@@ -40,7 +40,10 @@ import {
   translateToAnthropic,
   translateToOpenAI,
 } from "./non-stream-translation"
-import { sanitizeAnthropicPayload } from "./sanitize"
+import {
+  sanitizeAnthropicPayload,
+  stripServerToolsForNonMessagesApi,
+} from "./sanitize"
 import { translateChunkToAnthropicEvents } from "./stream-translation"
 import {
   parseSubagentMarkerFromFirstUser,
@@ -95,7 +98,10 @@ export async function handleCompletion(c: Context) {
     })
   }
 
-  if (shouldUseResponsesApi(anthropicPayload.model)) {
+  if (
+    shouldUseResponsesApi(anthropicPayload.model)
+    || hasWebSearchServerTool(anthropicPayload)
+  ) {
     return await handleWithResponsesApi(c, {
       anthropicPayload,
       initiatorOverride: initiator,
@@ -161,6 +167,7 @@ const handleWithChatCompletions = async (
     subagentOptions: SubagentOptions
   },
 ) => {
+  stripServerToolsForNonMessagesApi(anthropicPayload)
   const openAIPayload = translateToOpenAI(anthropicPayload)
   logger.debug(
     "Translated OpenAI request payload:",
@@ -365,6 +372,14 @@ const handleWithMessagesApi = async (
   )
   return c.json(response)
 }
+
+const hasWebSearchServerTool = (payload: AnthropicMessagesPayload): boolean =>
+  Array.isArray(payload.tools)
+  && payload.tools.some(
+    (t) =>
+      typeof (t as { type?: unknown }).type === "string"
+      && (t as { type: string }).type.startsWith("web_search"),
+  )
 
 const shouldUseResponsesApi = (modelId: string): boolean => {
   const selectedModel = state.models?.data.find((model) => model.id === modelId)
