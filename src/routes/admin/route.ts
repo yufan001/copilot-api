@@ -354,7 +354,7 @@ interface ReconnectPollRequestBody {
 }
 
 // Poll for access token during reconnect flow
-/* eslint-disable require-atomic-updates */
+/* eslint-disable require-atomic-updates, max-lines-per-function */
 adminRoutes.post("/api/auth/reconnect/poll", async (c) => {
   const body = await c.req.json<ReconnectPollRequestBody>()
 

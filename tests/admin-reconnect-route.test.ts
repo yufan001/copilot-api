@@ -1,11 +1,20 @@
+/* eslint-disable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-explicit-any, @typescript-eslint/require-await */
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test"
 
-import type { AppConfig } from "~/lib/config"
+import type { AccountConfig, AppConfig } from "~/lib/config"
 
-import { copilotTokenManager } from "~/lib/copilot-token-manager"
 import { getConfig, saveConfig } from "~/lib/config"
+import { copilotTokenManager } from "~/lib/copilot-token-manager"
 import { state } from "~/lib/state"
 import { server } from "~/server"
+
+// ---------------------------------------------------------------------------
+// Types — loose typing for test assertions on JSON responses
+// ---------------------------------------------------------------------------
+
+// biome-ignore lint: test file uses loose typing for JSON responses
+
+type ApiResponse = any
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -21,7 +30,7 @@ const tokenManager = copilotTokenManager as unknown as {
 }
 const originalTokenExpiresAt = tokenManager.tokenExpiresAt
 
-const ACCOUNT_1: AppConfig["accounts"] extends Array<infer T> ? T : never = {
+const ACCOUNT_1: AccountConfig = {
   id: "111",
   login: "alice",
   avatarUrl: "https://example.com/alice.png",
@@ -91,7 +100,7 @@ describe("GET /admin/api/auth/status", () => {
     const res = await server.fetch(makeRequest("/api/auth/status"))
 
     expect(res.status).toBe(200)
-    const data = await res.json()
+    const data = (await res.json()) as ApiResponse
     expect(data.authState).toBe("no_account")
     expect(data.authenticated).toBe(false)
     expect(data.activeAccount).toBeNull()
@@ -112,7 +121,7 @@ describe("GET /admin/api/auth/status", () => {
     const res = await server.fetch(makeRequest("/api/auth/status"))
 
     expect(res.status).toBe(200)
-    const data = await res.json()
+    const data = (await res.json()) as ApiResponse
     expect(data.authState).toBe("connected")
     expect(data.authenticated).toBe(true)
     expect(data.activeAccount?.login).toBe("alice")
@@ -133,7 +142,7 @@ describe("GET /admin/api/auth/status", () => {
     const res = await server.fetch(makeRequest("/api/auth/status"))
 
     expect(res.status).toBe(200)
-    const data = await res.json()
+    const data = (await res.json()) as ApiResponse
     expect(data.authState).toBe("needs_reconnect")
     expect(data.authenticated).toBe(false)
     expect(data.activeAccount?.login).toBe("alice")
@@ -154,7 +163,7 @@ describe("POST /admin/api/auth/reconnect/device-code", () => {
     )
 
     expect(res.status).toBe(400)
-    const data = await res.json()
+    const data = (await res.json()) as ApiResponse
     expect(data.error.type).toBe("validation_error")
   })
 
@@ -169,7 +178,7 @@ describe("POST /admin/api/auth/reconnect/device-code", () => {
     )
 
     expect(res.status).toBe(404)
-    const data = await res.json()
+    const data = (await res.json()) as ApiResponse
     expect(data.error.type).toBe("not_found")
   })
 
@@ -201,7 +210,7 @@ describe("POST /admin/api/auth/reconnect/device-code", () => {
     )
 
     expect(res.status).toBe(200)
-    const data = await res.json()
+    const data = (await res.json()) as ApiResponse
     expect(data.deviceCode).toBe("dev-code-abc")
     expect(data.userCode).toBe("ABCD-1234")
     expect(data.verificationUri).toBe("https://github.com/login/device")
@@ -233,7 +242,7 @@ describe("POST /admin/api/auth/reconnect/poll", () => {
     )
 
     expect(res.status).toBe(400)
-    const data = await res.json()
+    const data = (await res.json()) as ApiResponse
     expect(data.error.type).toBe("validation_error")
   })
 
@@ -246,7 +255,7 @@ describe("POST /admin/api/auth/reconnect/poll", () => {
     )
 
     expect(res.status).toBe(400)
-    const data = await res.json()
+    const data = (await res.json()) as ApiResponse
     expect(data.error.type).toBe("validation_error")
   })
 
@@ -266,7 +275,7 @@ describe("POST /admin/api/auth/reconnect/poll", () => {
     )
 
     expect(res.status).toBe(404)
-    const data = await res.json()
+    const data = (await res.json()) as ApiResponse
     expect(data.error.type).toBe("not_found")
   })
 
@@ -290,7 +299,7 @@ describe("POST /admin/api/auth/reconnect/poll", () => {
     )
 
     expect(res.status).toBe(200)
-    const data = await res.json()
+    const data = (await res.json()) as ApiResponse
     expect(data.pending).toBe(true)
   })
 
@@ -313,7 +322,7 @@ describe("POST /admin/api/auth/reconnect/poll", () => {
     )
 
     expect(res.status).toBe(400)
-    const data = await res.json()
+    const data = (await res.json()) as ApiResponse
     expect(data.error.type).toBe("expired")
   })
 
@@ -336,7 +345,7 @@ describe("POST /admin/api/auth/reconnect/poll", () => {
     )
 
     expect(res.status).toBe(400)
-    const data = await res.json()
+    const data = (await res.json()) as ApiResponse
     expect(data.error.type).toBe("denied")
   })
 
@@ -375,7 +384,7 @@ describe("POST /admin/api/auth/reconnect/poll", () => {
     )
 
     expect(res.status).toBe(400)
-    const data = await res.json()
+    const data = (await res.json()) as ApiResponse
     expect(data.error.type).toBe("identity_mismatch")
   })
 
@@ -420,9 +429,7 @@ describe("POST /admin/api/auth/reconnect/poll", () => {
         )
       }
       // cacheModels → getModels (call 4+)
-      return Promise.resolve(
-        Response.json({ data: [], object: "list" }),
-      )
+      return Promise.resolve(Response.json({ data: [], object: "list" }))
     }) as unknown as typeof fetch
 
     const res = await server.fetch(
@@ -433,7 +440,7 @@ describe("POST /admin/api/auth/reconnect/poll", () => {
     )
 
     expect(res.status).toBe(200)
-    const data = await res.json()
+    const data = (await res.json()) as ApiResponse
     expect(data.success).toBe(true)
     expect(data.account.id).toBe(ACCOUNT_1.id)
     expect(data.account.login).toBe(ACCOUNT_1.login)
