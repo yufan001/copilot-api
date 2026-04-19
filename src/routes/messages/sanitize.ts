@@ -1,5 +1,7 @@
 import consola from "consola"
 
+import { normalizeJsonSchema } from "~/lib/schema-utils"
+
 import type { AnthropicMessagesPayload } from "./anthropic-types"
 
 interface AnthropicToolLike {
@@ -15,11 +17,6 @@ const isServerTool = (tool: AnthropicToolLike): boolean =>
 const sanitizeAnthropicTool = (
   tool: AnthropicToolLike,
 ): Record<string, unknown> => {
-  // Server-side tools (web_search_20250305, bash_*, text_editor_*, computer_*,
-  // etc.) carry a `type` discriminator plus config like `max_uses`,
-  // `allowed_domains`, `user_location`. Upstream is responsible for executing
-  // them and emitting server_tool_use / *_tool_result content blocks —
-  // forward them verbatim instead of stripping everything except name.
   if (isServerTool(tool)) {
     return { ...(tool as Record<string, unknown>) }
   }
@@ -35,7 +32,9 @@ const sanitizeAnthropicTool = (
   }
 
   if (tool.input_schema && typeof tool.input_schema === "object") {
-    sanitized.input_schema = tool.input_schema
+    sanitized.input_schema = normalizeJsonSchema(
+      tool.input_schema as Record<string, unknown>,
+    )
   }
 
   return sanitized

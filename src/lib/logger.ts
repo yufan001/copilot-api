@@ -145,6 +145,39 @@ process.on("SIGTERM", () => {
 
 let lastCleanup = 0
 
+/**
+ * Adds a file reporter to the root consola instance so that all consola.info/warn/error
+ * calls (e.g. "[Request] model: ...", "[Auto] ...") are persisted to disk in addition
+ * to being printed to the console.
+ *
+ * Writes to: <APP_DIR>/logs/copilot-api-<date>.log
+ * Call once at server startup (main.ts).
+ */
+export const setupMainLogger = (): void => {
+  ensureLogDirectory()
+
+  consola.addReporter({
+    log(logObj) {
+      ensureLogDirectory()
+
+      if (Date.now() - lastCleanup > CLEANUP_INTERVAL_MS) {
+        cleanupOldLogs()
+        lastCleanup = Date.now()
+      }
+
+      const date = logObj.date
+      const dateKey = date.toLocaleDateString("sv-SE")
+      const timestamp = date.toLocaleString("sv-SE", { hour12: false })
+      const filePath = path.join(LOG_DIR, `copilot-api-${dateKey}.log`)
+      const message = formatArgs(logObj.args as Array<unknown>)
+      const tag = logObj.tag ? ` [${logObj.tag}]` : ""
+      const line = `[${timestamp}] [${logObj.type}]${tag}${message ? ` ${message}` : ""}`
+
+      appendLine(filePath, line)
+    },
+  })
+}
+
 export const createHandlerLogger = (name: string): ConsolaInstance => {
   ensureLogDirectory()
 

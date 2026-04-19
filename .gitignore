@@ -17,3 +17,6 @@ dist/
 .claude/
 .context/
 .playwright-mcp/
+
+# log files
+*.log

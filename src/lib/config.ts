@@ -189,3 +189,18 @@ export function getMappedModel(model: string): string {
   const config = getConfig()
   return config.modelMapping?.[model] ?? model
 }
+
+/**
+ * Resolve "auto" to a concrete model when the upstream doesn't have a model
+ * literally named "auto". Strategy:
+ * 1. Find a model whose id contains "auto" (e.g. "goldeneye-free-auto") — these
+ *    are typically quota-free routing models provided by the account.
+ * 2. Fall back to the configured smallModel.
+ */
+export function resolveAutoModel(
+  models?: Array<{ id: string; model_picker_enabled: boolean }>,
+): string {
+  const autoLike = models?.find((m) => m.id !== "auto" && m.id.includes("auto"))
+  if (autoLike) return autoLike.id
+  return getSmallModel()
+}

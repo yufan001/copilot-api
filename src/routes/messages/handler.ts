@@ -3,7 +3,7 @@ import type { Context } from "hono"
 import consola from "consola"
 import { streamSSE } from "hono/streaming"
 
-import { getMappedModel, getSmallModel } from "~/lib/config"
+import { getMappedModel, getSmallModel, resolveAutoModel } from "~/lib/config"
 import { createHandlerLogger } from "~/lib/logger"
 import { checkRateLimit } from "~/lib/rate-limit"
 import { getRootSessionId } from "~/lib/session"
@@ -52,11 +52,29 @@ import {
 
 const logger = createHandlerLogger("messages-handler")
 
+const resolveResponsesInitiator = (
+  model: string,
+  subagentMarker: SubagentMarker | null,
+  initiator: "agent" | "user",
+): "agent" | "user" => {
+  const onlyResponses =
+    shouldUseResponsesApi(model) && !shouldUseMessagesApi(model)
+  if (subagentMarker && onlyResponses) {
+    if (initiator === "agent") {
+      consola.info(
+        `[Auto] Model ${model} only supports /responses — forcing x-initiator: user for subagent`,
+      )
+    }
+    return "user"
+  }
+  return initiator
+}
+
 export async function handleCompletion(c: Context) {
   await checkRateLimit(state)
 
   const anthropicPayload = await c.req.json<AnthropicMessagesPayload>()
-  consola.info(`[Request] model: ${anthropicPayload.model}`)
+  consola.debug(`[Request] model: ${anthropicPayload.model}`)
   logger.debug("Anthropic request payload:", JSON.stringify(anthropicPayload))
 
   sanitizeAnthropicPayload(anthropicPayload)
@@ -69,6 +87,8 @@ export async function handleCompletion(c: Context) {
   const sessionId = getRootSessionId(anthropicPayload, c)
   logger.debug("Extracted session ID:", sessionId)
 
+  const originalModel = anthropicPayload.model
+
   // fix claude code 2.0.28+ warmup request consume premium request, forcing small model if no tools are used
   // set "CLAUDE_CODE_SUBAGENT_MODEL": "you small model" also can avoid this
   const anthropicBeta = c.req.header("anthropic-beta")
@@ -76,9 +96,23 @@ export async function handleCompletion(c: Context) {
   const noTools = !anthropicPayload.tools || anthropicPayload.tools.length === 0
   if (anthropicBeta && noTools) {
     anthropicPayload.model = getSmallModel()
+    consola.info(`[Model] Beta warmup override → ${anthropicPayload.model}`)
   }
 
   anthropicPayload.model = getMappedModel(anthropicPayload.model)
+  if (anthropicPayload.model !== originalModel) {
+    consola.info(`[Model] Mapped: ${originalModel} → ${anthropicPayload.model}`)
+  }
+
+  const autoInModels = state.models?.data.some((m) => m.id === "auto")
+  if (anthropicPayload.model === "auto") {
+    if (autoInModels) {
+      consola.info("[Auto] Native → upstream will choose the model")
+    } else {
+      anthropicPayload.model = resolveAutoModel(state.models?.data)
+      consola.info(`[Auto] Resolved to: ${anthropicPayload.model}`)
+    }
+  }
 
   const initiator = inferAnthropicInitiatorFromLastMessage(anthropicPayload)
 
@@ -102,9 +136,14 @@ export async function handleCompletion(c: Context) {
     shouldUseResponsesApi(anthropicPayload.model)
     || hasWebSearchServerTool(anthropicPayload)
   ) {
+    const responsesInitiator = resolveResponsesInitiator(
+      anthropicPayload.model,
+      subagentMarker,
+      initiator,
+    )
     return await handleWithResponsesApi(c, {
       anthropicPayload,
-      initiatorOverride: initiator,
+      initiatorOverride: responsesInitiator,
       subagentOptions: {
         subagentMarker,
         sessionId,
@@ -174,6 +213,7 @@ const handleWithChatCompletions = async (
     JSON.stringify(openAIPayload),
   )
 
+  const isAutoRequest = openAIPayload.model === "auto"
   const response = await createChatCompletions(openAIPayload, {
     initiator,
     subagentMarker: subagentOptions.subagentMarker,
@@ -185,6 +225,8 @@ const handleWithChatCompletions = async (
       "Non-streaming response from Copilot:",
       JSON.stringify(response),
     )
+    if (isAutoRequest)
+      consola.info(`[Auto] Backend selected: ${response.model}`)
     const anthropicResponse = translateToAnthropic(response)
     logger.debug(
       "Translated Anthropic response:",
@@ -202,6 +244,7 @@ const handleWithChatCompletions = async (
       toolCalls: {},
       thinkingBlockOpen: false,
     }
+    let autoModelLogged = false
 
     for await (const rawEvent of response) {
       logger.debug("Copilot raw stream event:", JSON.stringify(rawEvent))
@@ -214,6 +257,10 @@ const handleWithChatCompletions = async (
       }
 
       const chunk = JSON.parse(rawEvent.data) as ChatCompletionChunk
+      if (isAutoRequest && !autoModelLogged && chunk.model) {
+        consola.info(`[Auto] Backend selected: ${chunk.model}`)
+        autoModelLogged = true
+      }
       const events = translateChunkToAnthropicEvents(chunk, streamState)
 
       for (const event of events) {

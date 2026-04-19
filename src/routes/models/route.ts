@@ -23,9 +23,20 @@ modelRoutes.get("/", async (c) => {
       display_name: model.name,
     }))
 
+    // Virtual "auto" model — lets the upstream Copilot API choose the best model
+    const autoModel = {
+      id: "auto",
+      object: "model",
+      type: "model",
+      created: 0,
+      created_at: new Date(0).toISOString(),
+      owned_by: "github",
+      display_name: "Auto (Copilot selects best model)",
+    }
+
     return c.json({
       object: "list",
-      data: models,
+      data: [autoModel, ...(models ?? [])],
       has_more: false,
     })
   } catch (error) {

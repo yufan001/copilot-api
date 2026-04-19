@@ -1,10 +1,12 @@
 import type { Context } from "hono"
 
+import consola from "consola"
 import { streamSSE } from "hono/streaming"
 
-import { getConfig, getMappedModel } from "~/lib/config"
+import { getConfig, getMappedModel, resolveAutoModel } from "~/lib/config"
 import { createHandlerLogger } from "~/lib/logger"
 import { checkRateLimit } from "~/lib/rate-limit"
+import { normalizeJsonSchema } from "~/lib/schema-utils"
 import { state } from "~/lib/state"
 import {
   createResponses,
@@ -57,7 +59,22 @@ export const handleResponses = async (c: Context) => {
   const payload = await c.req.json<ResponsesPayload>()
   logger.debug("Responses request payload:", JSON.stringify(payload))
 
+  const requestedModel = payload.model
   payload.model = getMappedModel(payload.model)
+
+  const autoInModels = state.models?.data.some((m) => m.id === "auto")
+  if (payload.model === "auto") {
+    if (autoInModels) {
+      consola.info("[Auto] Native → upstream will choose the model")
+    } else {
+      payload.model = resolveAutoModel(state.models?.data)
+      consola.info(`[Auto] Resolved to: ${payload.model}`)
+    }
+  } else if (requestedModel !== payload.model) {
+    consola.info(`[Model] Mapped: ${requestedModel} → ${payload.model}`)
+  }
+
+  const isAutoRequest = payload.model === "auto"
 
   normalizeCustomTools(payload)
   filterUnsupportedTools(payload)
@@ -65,8 +82,12 @@ export const handleResponses = async (c: Context) => {
   const selectedModel = state.models?.data.find(
     (model) => model.id === payload.model,
   )
+  // "auto" is a special native model — the backend decides which endpoint to use
   const supportsResponses =
-    selectedModel?.supported_endpoints?.includes(RESPONSES_ENDPOINT) ?? false
+    payload.model === "auto" ?
+      true
+    : (selectedModel?.supported_endpoints?.includes(RESPONSES_ENDPOINT)
+      ?? false)
 
   if (!supportsResponses) {
     return c.json(
@@ -93,8 +114,23 @@ export const handleResponses = async (c: Context) => {
       for await (const chunk of response) {
         logger.debug("Responses stream chunk:", JSON.stringify(chunk))
 
+        const data = (chunk as { data?: string }).data ?? ""
+        if (isAutoRequest) {
+          try {
+            const parsed = JSON.parse(data) as {
+              type?: string
+              response?: { model?: string }
+            }
+            if (parsed.type === "response.created" && parsed.response?.model) {
+              consola.info(`[Auto] Backend selected: ${parsed.response.model}`)
+            }
+          } catch {
+            // not JSON or no model field, ignore
+          }
+        }
+
         const processedData = fixStreamIds(
-          (chunk as { data?: string }).data ?? "",
+          data,
           (chunk as { event?: string }).event,
           idTracker,
         )
@@ -112,6 +148,10 @@ export const handleResponses = async (c: Context) => {
     "Forwarding native Responses result:",
     JSON.stringify(response).slice(-400),
   )
+  if (isAutoRequest) {
+    const result = response as ResponsesResult
+    if (result.model) consola.info(`[Auto] Backend selected: ${result.model}`)
+  }
   return c.json(response as ResponsesResult)
 }
 
@@ -184,38 +224,40 @@ const isCustomTool = (tool: Tool): tool is CustomTool =>
 const getCustomToolParameters = (tool: {
   input_schema?: Record<string, unknown>
   parameters?: Record<string, unknown>
-}): Record<string, unknown> =>
-  tool.parameters
-  ?? tool.input_schema ?? {
-    type: "object",
-    additionalProperties: true,
-    properties: {
-      file_path: {
-        type: "string",
-        description: "Path of the file to write or edit.",
-      },
-      content: {
-        type: "string",
-        description: "New file content for write operations.",
-      },
-      old_string: {
-        type: "string",
-        description: "Text to replace for edit operations.",
-      },
-      new_string: {
-        type: "string",
-        description: "Replacement text for edit operations.",
-      },
-      edits: {
-        type: "array",
-        description: "Batch edit instructions for multi-edit operations.",
-        items: {
-          type: "object",
-          additionalProperties: true,
+}): Record<string, unknown> => {
+  const raw = tool.parameters
+    ?? tool.input_schema ?? {
+      type: "object",
+      additionalProperties: true,
+      properties: {
+        file_path: {
+          type: "string",
+          description: "Path of the file to write or edit.",
+        },
+        content: {
+          type: "string",
+          description: "New file content for write operations.",
+        },
+        old_string: {
+          type: "string",
+          description: "Text to replace for edit operations.",
+        },
+        new_string: {
+          type: "string",
+          description: "Replacement text for edit operations.",
+        },
+        edits: {
+          type: "array",
+          description: "Batch edit instructions for multi-edit operations.",
+          items: {
+            type: "object",
+            additionalProperties: true,
+          },
         },
       },
-    },
-  }
+    }
+  return normalizeJsonSchema(raw)
+}
 
 /**
  * Filter out unsupported tool types for Copilot API.

@@ -120,6 +120,7 @@ Each route folder contains:
 
 - Prohibited from directly asking questions to users, MUST use AskUserQuestion tool.
 - Once you can confirm that the task is complete, MUST use AskUserQuestion tool to make user confirm.
+- If the user is not satisfied with the result, they may provide feedback. Use that feedback to improve and retry.
 
 ## Skill routing
 

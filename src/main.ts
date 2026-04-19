@@ -11,6 +11,7 @@ import {
   getServerHost,
   LOCAL_ACCESS_MODE,
 } from "./lib/local-security"
+import { setupMainLogger } from "./lib/logger"
 import { ensurePaths } from "./lib/paths"
 import { initProxyFromEnv } from "./lib/proxy"
 import { state } from "./lib/state"
@@ -40,6 +41,8 @@ async function main(): Promise<void> {
     consola.level = 5
     consola.info("Verbose logging enabled")
   }
+
+  setupMainLogger()
 
   state.rateLimitSeconds = RATE_LIMIT ?? config.rateLimitSeconds
   state.rateLimitWait =

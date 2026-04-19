@@ -5,7 +5,7 @@ import { streamSSE, type SSEMessage } from "hono/streaming"
 
 import type { Model } from "~/services/copilot/get-models"
 
-import { getMappedModel } from "~/lib/config"
+import { getMappedModel, resolveAutoModel } from "~/lib/config"
 import { createHandlerLogger } from "~/lib/logger"
 import { checkRateLimit } from "~/lib/rate-limit"
 import { state } from "~/lib/state"
@@ -24,10 +24,23 @@ export async function handleCompletion(c: Context) {
   await checkRateLimit(state)
 
   let payload = await c.req.json<ChatCompletionsPayload>()
-  consola.info(`[Request] model: ${payload.model}`)
+  consola.debug(`[Request] model: ${payload.model}`)
   logger.debug("Request payload:", JSON.stringify(payload).slice(-400))
 
+  const requestedModel = payload.model
   payload.model = getMappedModel(payload.model)
+
+  const autoInModels = state.models?.data.some((m) => m.id === "auto")
+  if (payload.model === "auto") {
+    if (autoInModels) {
+      consola.info("[Auto] Native → upstream will choose the model")
+    } else {
+      payload.model = resolveAutoModel(state.models?.data)
+      consola.info(`[Auto] Resolved to: ${payload.model}`)
+    }
+  } else if (requestedModel !== payload.model) {
+    consola.info(`[Model] Mapped: ${requestedModel} → ${payload.model}`)
+  }
 
   // Find the selected model
   const selectedModel = state.models?.data.find(
@@ -62,21 +75,33 @@ export async function handleCompletion(c: Context) {
     logger.debug("Set max_tokens to:", JSON.stringify(payload.max_tokens))
   }
 
+  const isAutoRequest = payload.model === "auto"
   const response = await createChatCompletions(payload)
 
   if (isNonStreaming(response)) {
     response.created = getEpochSec()
+    if (isAutoRequest)
+      consola.info(`[Auto] Backend selected: ${response.model}`)
     logger.debug("Non-streaming response:", JSON.stringify(response))
     return c.json(response)
   }
 
   logger.debug("Streaming response")
   return streamSSE(c, async (stream) => {
+    let autoModelLogged = false
     for await (const chunk of response) {
       if (chunk.data) {
         try {
           const parsed = JSON.parse(chunk.data) as Record<string, unknown>
           parsed.created = getEpochSec()
+          if (
+            isAutoRequest
+            && !autoModelLogged
+            && typeof parsed.model === "string"
+          ) {
+            consola.info(`[Auto] Backend selected: ${parsed.model}`)
+            autoModelLogged = true
+          }
           chunk.data = JSON.stringify(parsed)
         } catch {
           // Keep original data if not valid JSON (e.g. "[DONE]")
@@ -103,6 +128,11 @@ const getChatCompletionsModelValidationError = (
   type: "invalid_request_error"
 } | null => {
   if (!state.models?.data) {
+    return null
+  }
+
+  // "auto" is a native backend model — skip local validation
+  if (modelId === "auto") {
     return null
   }
 

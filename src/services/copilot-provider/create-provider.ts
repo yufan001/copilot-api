@@ -88,15 +88,18 @@ export async function copilotRequest(
     ...copilotHeaders(state, options.vision),
   }
 
-  if (options.initiator) {
-    headers["X-Initiator"] = options.initiator
-  }
-
+  // prepareSubagentHeaders sets x-initiator: agent when subagentMarker is set.
+  // options.initiator is applied AFTER so it can override that value
+  // (e.g. forcing "user" for models that reject x-initiator: agent).
   prepareSubagentHeaders(
     options.sessionId,
     Boolean(options.subagentMarker),
     headers,
   )
+
+  if (options.initiator) {
+    headers["x-initiator"] = options.initiator
+  }
 
   if (options.extraHeaders) {
     Object.assign(headers, options.extraHeaders)
@@ -105,6 +108,10 @@ export async function copilotRequest(
   const copilotFetch = createCopilotFetch()
   const url = `${copilotBaseUrl(state)}${options.path}`
   const method = options.method ?? "POST"
+
+  consola.debug(
+    `[copilotRequest] ${method} ${options.path} | x-initiator=${headers["x-initiator"] ?? "none"} | x-interaction-type=${headers["x-interaction-type"] ?? "none"}`,
+  )
 
   const response = await copilotFetch(url, {
     method,
