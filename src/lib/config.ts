@@ -44,6 +44,13 @@ const defaultConfig: AppConfig = {
   modelReasoningEfforts: {
     "gpt-5-mini": "low",
   },
+  modelMapping: {
+    // Claude model aliases -> Copilot models
+    haiku: "gpt-5-mini",
+    "claude-haiku-3-5": "gpt-5-mini",
+    "claude-3-5-haiku": "gpt-5-mini",
+    "claude-3-5-haiku-20241022": "gpt-5-mini",
+  },
   useFunctionApplyPatch: true,
   rateLimitWait: false,
   accounts: [],
