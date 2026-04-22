@@ -76,7 +76,9 @@ export async function handleCompletion(c: Context) {
   }
 
   const isAutoRequest = payload.model === "auto"
-  const response = await createChatCompletions(payload)
+  const response = await createChatCompletions(payload, {
+    sourceRoute: "/v1/chat/completions",
+  })
 
   if (isNonStreaming(response)) {
     response.created = getEpochSec()

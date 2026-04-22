@@ -1,3 +1,4 @@
+/* eslint-disable max-lines -- single-file admin SPA bundle (HTML + inline CSS + JS) */
 export const adminHtml = `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -183,6 +184,7 @@ export const adminHtml = `<!DOCTYPE html>
       <button class="tab" data-tab="models">Models</button>
       <button class="tab" data-tab="usage">Usage</button>
       <button class="tab" data-tab="model-mappings">Model Mappings</button>
+      <button class="tab" data-tab="trace">Trace</button>
     </div>
     <div class="tab-content active" id="tab-accounts">
       <div class="card">
@@ -270,6 +272,84 @@ export const adminHtml = `<!DOCTYPE html>
         </table>
       </div>
     </div>
+    <div class="tab-content" id="tab-trace">
+      <div class="card">
+        <div class="card-header">
+          <span class="card-title">Subagent / Premium Trace</span>
+          <div style="display:flex; gap:0.5rem; align-items:center;">
+            <select class="select" id="traceDays" style="margin:0; width:auto; padding:0.25rem 0.5rem;">
+              <option value="1">Today</option>
+              <option value="3">Last 3 days</option>
+              <option value="7" selected>Last 7 days</option>
+              <option value="14">Last 14 days</option>
+              <option value="30">Last 30 days</option>
+            </select>
+            <button class="btn btn-sm refresh-btn" id="refreshTrace">
+              <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M1.705 8.005a.75.75 0 0 1 .834.656 5.5 5.5 0 0 0 9.592 2.97l-1.204-1.204a.25.25 0 0 1 .177-.427h3.646a.25.25 0 0 1 .25.25v3.646a.25.25 0 0 1-.427.177l-1.38-1.38A7.002 7.002 0 0 1 1.05 8.84a.75.75 0 0 1 .656-.834ZM8 2.5a5.487 5.487 0 0 0-4.131 1.869l1.204 1.204A.25.25 0 0 1 4.896 6H1.25A.25.25 0 0 1 1 5.75V2.104a.25.25 0 0 1 .427-.177l1.38 1.38A7.002 7.002 0 0 1 14.95 7.16a.75.75 0 0 1-1.49.178A5.5 5.5 0 0 0 8 2.5Z"></path></svg>
+              Refresh
+            </button>
+          </div>
+        </div>
+        <div id="traceSummary"><div class="empty-state">Loading trace data...</div></div>
+      </div>
+      <div class="card">
+        <div class="card-header"><span class="card-title">Daily breakdown</span></div>
+        <div id="traceDayChart"><div class="empty-state">Loading...</div></div>
+      </div>
+      <div class="card">
+        <div class="card-header"><span class="card-title">Subagent agent_type ranking</span></div>
+        <div style="overflow-x:auto;">
+          <table style="width:100%; border-collapse:collapse; font-size:0.875rem;">
+            <thead>
+              <tr style="color:#8b949e; text-align:left; border-bottom:1px solid #30363d;">
+                <th style="padding:0.5rem;">agent_type</th>
+                <th style="padding:0.5rem; text-align:right;">requests</th>
+                <th style="padding:0.5rem; text-align:right;">sessions</th>
+                <th style="padding:0.5rem; text-align:right;">avg body</th>
+                <th style="padding:0.5rem; text-align:right;">premium</th>
+              </tr>
+            </thead>
+            <tbody id="traceAgentTypeTable"><tr><td colspan="5" class="empty-state">Loading...</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-header"><span class="card-title">By model</span></div>
+        <div style="overflow-x:auto;">
+          <table style="width:100%; border-collapse:collapse; font-size:0.875rem;">
+            <thead>
+              <tr style="color:#8b949e; text-align:left; border-bottom:1px solid #30363d;">
+                <th style="padding:0.5rem;">model</th>
+                <th style="padding:0.5rem; text-align:right;">total</th>
+                <th style="padding:0.5rem; text-align:right;">subagent</th>
+                <th style="padding:0.5rem; text-align:right;">total bytes</th>
+              </tr>
+            </thead>
+            <tbody id="traceModelTable"><tr><td colspan="4" class="empty-state">Loading...</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-header"><span class="card-title">Recent requests</span></div>
+        <div style="overflow-x:auto;">
+          <table style="width:100%; border-collapse:collapse; font-size:0.75rem;">
+            <thead>
+              <tr style="color:#8b949e; text-align:left; border-bottom:1px solid #30363d;">
+                <th style="padding:0.4rem;">time</th>
+                <th style="padding:0.4rem;">route</th>
+                <th style="padding:0.4rem;">model</th>
+                <th style="padding:0.4rem;">agent_type</th>
+                <th style="padding:0.4rem; text-align:right;">body KB</th>
+                <th style="padding:0.4rem; text-align:right;">ms</th>
+                <th style="padding:0.4rem;">status</th>
+                <th style="padding:0.4rem; text-align:right;">prem rem</th>
+              </tr>
+            </thead>
+            <tbody id="traceRecentTable"><tr><td colspan="8" class="empty-state">Loading...</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
   </div>
   <div class="modal-overlay" id="authModal">
     <div class="modal">
@@ -353,6 +433,7 @@ export const adminHtml = `<!DOCTYPE html>
         if (tab.dataset.tab === 'models') fetchModels();
         if (tab.dataset.tab === 'usage') fetchUsage();
         if (tab.dataset.tab === 'model-mappings') fetchMappings();
+        if (tab.dataset.tab === 'trace') fetchTrace();
       });
     });
     async function fetchSettings() {
@@ -760,6 +841,132 @@ export const adminHtml = `<!DOCTYPE html>
         }
       } catch (e) { alert('Failed to save mapping'); }
     });
+
+    // Trace tab
+    async function fetchTrace() {
+      const btn = document.getElementById('refreshTrace');
+      btn && btn.classList.add('loading');
+      try {
+        const days = document.getElementById('traceDays').value;
+        const res = await fetch(API_BASE + '/trace/stats?days=' + days);
+        const data = await res.json();
+        renderTraceSummary(data);
+        renderTraceDayChart(data);
+        renderTraceAgentTypeTable(data);
+        renderTraceModelTable(data);
+        renderTraceRecentTable(data);
+      } catch (e) {
+        document.getElementById('traceSummary').innerHTML = '<div class="empty-state">Failed to load trace data</div>';
+      } finally {
+        btn && btn.classList.remove('loading');
+      }
+    }
+    function parsePremiumRem(raw) {
+      if (!raw) return '';
+      const m = /rem=([\\d.]+)/.exec(raw);
+      return m ? m[1] : '';
+    }
+    function renderTraceSummary(data) {
+      const card = (label, value, hint) =>
+        '<div class="usage-card"><div class="usage-title">' + label + '</div>' +
+        '<div style="font-size:1.5rem; font-weight:600; margin:0.5rem 0; color:#c9d1d9;">' + value + '</div>' +
+        '<div class="usage-stats"><span>' + (hint || '') + '</span></div></div>';
+      const ratio = (data.subagentRatio * 100).toFixed(1) + '%';
+      const html = '<div class="usage-grid">' +
+        card('Total requests (' + data.windowDays + 'd)', data.totalRequests, data.totalSubagent + ' from subagent') +
+        card('Subagent ratio', ratio, 'lower is better') +
+        card('Premium consumed (' + data.windowDays + 'd)', data.totalPremiumConsumed.toFixed(2), 'today: ' + data.todayPremiumConsumed.toFixed(2)) +
+        card('Premium remaining', parsePremiumRem(data.latestPremiumRemaining) || 'n/a', 'last seen snapshot') +
+        '</div>';
+      document.getElementById('traceSummary').innerHTML = html;
+    }
+    function renderTraceDayChart(data) {
+      const days = data.byDay || [];
+      if (days.length === 0) {
+        document.getElementById('traceDayChart').innerHTML = '<div class="empty-state">No data</div>';
+        return;
+      }
+      const max = Math.max.apply(null, days.map(d => d.total).concat(1));
+      const rows = days.map(d => {
+        const subaPct = (d.subagent / max) * 100;
+        const mainPct = (d.mainConversation / max) * 100;
+        return '<div style="display:grid; grid-template-columns:90px 1fr 130px; gap:0.5rem; align-items:center; margin-bottom:0.4rem; font-size:0.75rem;">' +
+          '<div style="color:#8b949e; font-family:monospace;">' + d.date + '</div>' +
+          '<div style="display:flex; height:18px; background:#21262d; border-radius:4px; overflow:hidden;">' +
+            '<div style="width:' + mainPct + '%; background:#58a6ff;" title="main: ' + d.mainConversation + '"></div>' +
+            '<div style="width:' + subaPct + '%; background:#9333ea;" title="subagent: ' + d.subagent + '"></div>' +
+          '</div>' +
+          '<div style="text-align:right; color:#8b949e;">' + d.total + ' req &middot; ' + d.premiumConsumed.toFixed(2) + 'p</div>' +
+        '</div>';
+      }).join('');
+      const legend = '<div style="display:flex; gap:1rem; margin-top:0.75rem; font-size:0.75rem; color:#8b949e;">' +
+        '<span><span style="display:inline-block; width:10px; height:10px; background:#58a6ff; margin-right:0.25rem; vertical-align:middle;"></span>main</span>' +
+        '<span><span style="display:inline-block; width:10px; height:10px; background:#9333ea; margin-right:0.25rem; vertical-align:middle;"></span>subagent</span>' +
+        '</div>';
+      document.getElementById('traceDayChart').innerHTML = rows + legend;
+    }
+    function renderTraceAgentTypeTable(data) {
+      const rows = data.byAgentType || [];
+      const tbody = document.getElementById('traceAgentTypeTable');
+      if (rows.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="5" class="empty-state">No subagent activity</td></tr>';
+        return;
+      }
+      tbody.innerHTML = rows.map(r =>
+        '<tr style="border-bottom:1px solid #21262d;">' +
+        '<td style="padding:0.5rem;"><code style="background:#21262d; padding:0.1rem 0.4rem; border-radius:4px; font-size:0.75rem;">' + escHtml(r.agentType) + '</code></td>' +
+        '<td style="padding:0.5rem; text-align:right;">' + r.count + '</td>' +
+        '<td style="padding:0.5rem; text-align:right;">' + r.distinctSessions + '</td>' +
+        '<td style="padding:0.5rem; text-align:right;">' + r.avgBodyKb.toFixed(1) + ' KB</td>' +
+        '<td style="padding:0.5rem; text-align:right;">' + r.premiumConsumed.toFixed(2) + '</td>' +
+        '</tr>'
+      ).join('');
+    }
+    function renderTraceModelTable(data) {
+      const rows = data.byModel || [];
+      const tbody = document.getElementById('traceModelTable');
+      if (rows.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="4" class="empty-state">No requests yet</td></tr>';
+        return;
+      }
+      tbody.innerHTML = rows.map(r =>
+        '<tr style="border-bottom:1px solid #21262d;">' +
+        '<td style="padding:0.5rem;"><code style="background:#21262d; padding:0.1rem 0.4rem; border-radius:4px; font-size:0.75rem;">' + escHtml(r.model || 'unknown') + '</code></td>' +
+        '<td style="padding:0.5rem; text-align:right;">' + r.count + '</td>' +
+        '<td style="padding:0.5rem; text-align:right;">' + r.subagentCount + '</td>' +
+        '<td style="padding:0.5rem; text-align:right;">' + (r.totalBytes / 1024 / 1024).toFixed(2) + ' MB</td>' +
+        '</tr>'
+      ).join('');
+    }
+    function renderTraceRecentTable(data) {
+      const rows = data.recent || [];
+      const tbody = document.getElementById('traceRecentTable');
+      if (rows.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="8" class="empty-state">No recent requests</td></tr>';
+        return;
+      }
+      const fmtTs = (ts) => {
+        const d = new Date(ts);
+        const hh = String(d.getHours()).padStart(2, '0');
+        const mm = String(d.getMinutes()).padStart(2, '0');
+        const ss = String(d.getSeconds()).padStart(2, '0');
+        return hh + ':' + mm + ':' + ss;
+      };
+      tbody.innerHTML = rows.map(r =>
+        '<tr style="border-bottom:1px solid #21262d;">' +
+        '<td style="padding:0.4rem; font-family:monospace; color:#8b949e;">' + fmtTs(r.ts) + '</td>' +
+        '<td style="padding:0.4rem; color:#8b949e;">' + escHtml(r.sourceRoute || '-') + '</td>' +
+        '<td style="padding:0.4rem;"><code style="background:#21262d; padding:0.1rem 0.3rem; border-radius:3px; font-size:0.7rem;">' + escHtml(r.model || '-') + '</code></td>' +
+        '<td style="padding:0.4rem;">' + (r.subagentAgentType ? '<span style="color:#9333ea;">' + escHtml(r.subagentAgentType) + '</span>' : '<span style="color:#8b949e;">-</span>') + '</td>' +
+        '<td style="padding:0.4rem; text-align:right; color:#8b949e;">' + (r.bodySize / 1024).toFixed(1) + '</td>' +
+        '<td style="padding:0.4rem; text-align:right; color:#8b949e;">' + (r.durationMs == null ? '-' : r.durationMs) + '</td>' +
+        '<td style="padding:0.4rem; color:' + (r.status && r.status >= 400 ? '#f85149' : '#8b949e') + ';">' + (r.status == null ? 'err' : r.status) + '</td>' +
+        '<td style="padding:0.4rem; text-align:right; color:#8b949e;">' + parsePremiumRem(r.premiumRemaining) + '</td>' +
+        '</tr>'
+      ).join('');
+    }
+    document.getElementById('refreshTrace').addEventListener('click', fetchTrace);
+    document.getElementById('traceDays').addEventListener('change', fetchTrace);
   </script>
 </body>
 </html>`

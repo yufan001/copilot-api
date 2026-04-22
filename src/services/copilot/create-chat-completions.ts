@@ -8,6 +8,7 @@ interface ChatCompletionsOptions {
   initiator?: "agent" | "user"
   subagentMarker?: SubagentMarker | null
   sessionId?: string
+  sourceRoute?: string
 }
 
 export const createChatCompletions = async (
@@ -32,6 +33,7 @@ export const createChatCompletions = async (
     initiator: options.initiator ?? (isAgentCall ? "agent" : "user"),
     subagentMarker: options.subagentMarker,
     sessionId: options.sessionId,
+    sourceRoute: options.sourceRoute,
   })
 
   if (payload.stream) {

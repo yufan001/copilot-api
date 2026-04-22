@@ -12,6 +12,11 @@ import {
 import { ContextOverflowError, isContextOverflow } from "~/lib/copilot-error"
 import { copilotTokenManager } from "~/lib/copilot-token-manager"
 import { HTTPError } from "~/lib/error"
+import {
+  extractInterestingHeaders,
+  recordUpstream,
+  type UpstreamTraceEntry,
+} from "~/lib/request-trace"
 import { state } from "~/lib/state"
 
 /**
@@ -68,6 +73,8 @@ export interface CopilotRequestOptions {
   sessionId?: string
   /** Additional headers to merge (e.g. anthropic-beta) */
   extraHeaders?: Record<string, string>
+  /** Client-facing route that triggered this upstream call (diagnostic only). */
+  sourceRoute?: string
 }
 
 /**
@@ -113,12 +120,35 @@ export async function copilotRequest(
     `[copilotRequest] ${method} ${options.path} | x-initiator=${headers["x-initiator"] ?? "none"} | x-interaction-type=${headers["x-interaction-type"] ?? "none"}`,
   )
 
-  const response = await copilotFetch(url, {
-    method,
-    headers,
-    ...(options.body !== undefined && {
-      body: JSON.stringify(options.body),
-    }),
+  const baseEntry = buildTraceBase(method, headers, options)
+  const startedAt = Date.now()
+
+  let response: Response
+  try {
+    response = await copilotFetch(url, {
+      method,
+      headers,
+      ...(options.body !== undefined && {
+        body: JSON.stringify(options.body),
+      }),
+    })
+  } catch (err) {
+    recordUpstream({
+      ...baseEntry,
+      duration_ms: Date.now() - startedAt,
+      status: null,
+      response_headers: null,
+      error: err instanceof Error ? err.message : String(err),
+    })
+    throw err
+  }
+
+  recordUpstream({
+    ...baseEntry,
+    duration_ms: Date.now() - startedAt,
+    status: response.status,
+    response_headers: extractInterestingHeaders(response.headers),
+    error: response.ok ? null : `HTTP ${response.status}`,
   })
 
   if (!response.ok) {
@@ -134,4 +164,44 @@ export async function copilotRequest(
   }
 
   return response
+}
+
+const extractModel = (body: unknown): string | null => {
+  if (!body || typeof body !== "object") return null
+  const model = (body as { model?: unknown }).model
+  return typeof model === "string" ? model : null
+}
+
+type TraceBase = Omit<
+  UpstreamTraceEntry,
+  "duration_ms" | "status" | "response_headers" | "error"
+>
+
+const buildTraceBase = (
+  method: string,
+  headers: Record<string, string>,
+  options: CopilotRequestOptions,
+): TraceBase => {
+  const bodyJson =
+    options.body === undefined ? "" : JSON.stringify(options.body)
+
+  return {
+    ts: new Date().toISOString(),
+    source_route: options.sourceRoute ?? null,
+    upstream_path: options.path,
+    method,
+    model: extractModel(options.body),
+    x_request_id: headers["x-request-id"] ?? null,
+    x_interaction_id: headers["x-interaction-id"] ?? null,
+    x_initiator: headers["x-initiator"] ?? null,
+    x_interaction_type: headers["x-interaction-type"] ?? null,
+    has_vision: Boolean(options.vision),
+    anthropic_beta: headers["anthropic-beta"] ?? null,
+    subagent_marker_present: Boolean(options.subagentMarker),
+    subagent_agent_id: options.subagentMarker?.agent_id ?? null,
+    subagent_agent_type: options.subagentMarker?.agent_type ?? null,
+    subagent_session_id: options.subagentMarker?.session_id ?? null,
+    marker_in_body: bodyJson.includes("__SUBAGENT_MARKER__"),
+    body_size: bodyJson.length,
+  }
 }

@@ -14,6 +14,7 @@ import {
 import { setupMainLogger } from "./lib/logger"
 import { ensurePaths } from "./lib/paths"
 import { initProxyFromEnv } from "./lib/proxy"
+import { getUpstreamTracePath } from "./lib/request-trace"
 import { state } from "./lib/state"
 import { cacheModels, cacheVSCodeVersion } from "./lib/utils"
 
@@ -95,7 +96,9 @@ async function main(): Promise<void> {
     )
   }
 
-  consola.box(`copilot-api server\n\n📋 Account Manager: ${serverUrl}/admin`)
+  consola.box(
+    `copilot-api server\n\n📋 Account Manager: ${serverUrl}/admin\n🔍 Upstream trace: ${getUpstreamTracePath()}`,
+  )
 
   const { server } = await import("./server")
 

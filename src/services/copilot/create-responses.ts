@@ -345,11 +345,18 @@ interface ResponsesRequestOptions {
   initiator: "agent" | "user"
   subagentMarker?: SubagentMarker | null
   sessionId?: string
+  sourceRoute?: string
 }
 
 export const createResponses = async (
   payload: ResponsesPayload,
-  { vision, initiator, subagentMarker, sessionId }: ResponsesRequestOptions,
+  {
+    vision,
+    initiator,
+    subagentMarker,
+    sessionId,
+    sourceRoute,
+  }: ResponsesRequestOptions,
 ): Promise<CreateResponsesReturn> => {
   // service_tier is not supported by github copilot
   payload.service_tier = null
@@ -361,6 +368,7 @@ export const createResponses = async (
     initiator,
     subagentMarker,
     sessionId,
+    sourceRoute,
   })
 
   if (payload.stream) {

@@ -33,6 +33,7 @@ interface SubagentInfo {
 interface CreateMessagesOptions extends SubagentInfo {
   anthropicBetaHeader?: string
   initiatorOverride?: "agent" | "user"
+  sourceRoute?: string
 }
 
 function buildBetaHeaders(
@@ -85,6 +86,7 @@ export const createMessages = async (
     subagentMarker: options.subagentMarker,
     sessionId: options.sessionId,
     extraHeaders: buildBetaHeaders(options.anthropicBetaHeader, payload),
+    sourceRoute: options.sourceRoute,
   })
 
   if (payload.stream) {

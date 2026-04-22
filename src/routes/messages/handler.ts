@@ -84,7 +84,13 @@ export async function handleCompletion(c: Context) {
     logger.debug("Detected Subagent marker:", JSON.stringify(subagentMarker))
   }
 
-  const sessionId = getRootSessionId(anthropicPayload, c)
+  // Fall back to the subagent marker's session_id when neither
+  // metadata.user_id (`_session_<id>`) nor `x-session-id` is provided
+  // by the upstream client (e.g. Cursor's Claude Code does not send either).
+  // This keeps `x-interaction-id` stable across all upstream calls within
+  // the same subagent, so Copilot can group them as one interaction.
+  const sessionId =
+    getRootSessionId(anthropicPayload, c) ?? subagentMarker?.session_id
   logger.debug("Extracted session ID:", sessionId)
 
   const originalModel = anthropicPayload.model
@@ -129,6 +135,7 @@ export async function handleCompletion(c: Context) {
       initiatorOverride: initiator,
       subagentMarker,
       sessionId,
+      sourceRoute: "/v1/messages",
     })
   }
 
@@ -148,6 +155,7 @@ export async function handleCompletion(c: Context) {
         subagentMarker,
         sessionId,
       },
+      sourceRoute: "/v1/messages",
     })
   }
 
@@ -158,6 +166,7 @@ export async function handleCompletion(c: Context) {
       subagentMarker,
       sessionId,
     },
+    sourceRoute: "/v1/messages",
   })
 }
 
@@ -200,10 +209,12 @@ const handleWithChatCompletions = async (
     anthropicPayload,
     initiator,
     subagentOptions,
+    sourceRoute,
   }: {
     anthropicPayload: AnthropicMessagesPayload
     initiator: "agent" | "user"
     subagentOptions: SubagentOptions
+    sourceRoute?: string
   },
 ) => {
   stripServerToolsForNonMessagesApi(anthropicPayload)
@@ -218,6 +229,7 @@ const handleWithChatCompletions = async (
     initiator,
     subagentMarker: subagentOptions.subagentMarker,
     sessionId: subagentOptions.sessionId,
+    sourceRoute,
   })
 
   if (isNonStreaming(response)) {
@@ -280,10 +292,12 @@ const handleWithResponsesApi = async (
     anthropicPayload,
     initiatorOverride,
     subagentOptions,
+    sourceRoute,
   }: {
     anthropicPayload: AnthropicMessagesPayload
     initiatorOverride: "agent" | "user"
     subagentOptions: SubagentOptions
+    sourceRoute?: string
   },
 ) => {
   const responsesPayload =
@@ -299,6 +313,7 @@ const handleWithResponsesApi = async (
     initiator: initiatorOverride,
     subagentMarker: subagentOptions.subagentMarker,
     sessionId: subagentOptions.sessionId,
+    sourceRoute,
   })
 
   if (responsesPayload.stream && isAsyncIterable(response)) {
@@ -383,11 +398,13 @@ const handleWithMessagesApi = async (
     initiatorOverride,
     subagentMarker,
     sessionId,
+    sourceRoute,
   }: {
     anthropicBetaHeader: string | undefined
     initiatorOverride: "agent" | "user"
     subagentMarker: SubagentMarker | null
     sessionId: string | undefined
+    sourceRoute?: string
   },
 ) => {
   stripThinkingBlocks(anthropicPayload)
@@ -396,6 +413,7 @@ const handleWithMessagesApi = async (
     initiatorOverride,
     subagentMarker,
     sessionId,
+    sourceRoute,
   })
 
   if (isAsyncIterable(response)) {

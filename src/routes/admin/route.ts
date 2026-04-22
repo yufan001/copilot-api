@@ -12,6 +12,7 @@ import {
 } from "~/lib/accounts"
 import { getConfig, saveConfig } from "~/lib/config"
 import { copilotTokenManager } from "~/lib/copilot-token-manager"
+import { readTraceStats } from "~/lib/request-trace"
 import { state } from "~/lib/state"
 import { cacheModels } from "~/lib/utils"
 import { getDeviceCode } from "~/services/github/get-device-code"
@@ -629,6 +630,17 @@ adminRoutes.delete("/api/model-mappings/:from", async (c) => {
   const { [from]: _removed, ...rest } = config.modelMapping
   await saveConfig({ ...config, modelMapping: rest })
   return c.json({ success: true })
+})
+
+// Trace stats: aggregated subagent / premium / model usage from JSONL logs
+adminRoutes.get("/api/trace/stats", (c) => {
+  const days = Number.parseInt(c.req.query("days") ?? "7", 10)
+  const recent = Number.parseInt(c.req.query("recent") ?? "50", 10)
+  const stats = readTraceStats({
+    days: Number.isFinite(days) ? days : 7,
+    recentLimit: Number.isFinite(recent) ? recent : 50,
+  })
+  return c.json(stats)
 })
 
 // Serve static HTML for admin UI
