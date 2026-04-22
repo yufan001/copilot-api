@@ -632,6 +632,65 @@ adminRoutes.delete("/api/model-mappings/:from", async (c) => {
   return c.json({ success: true })
 })
 
+// Subagent Model Overrides API (agent_type → target model)
+adminRoutes.get("/api/subagent-overrides", (c) => {
+  const config = getConfig()
+  return c.json({ overrides: config.subagentModelOverrides ?? {} })
+})
+
+adminRoutes.put("/api/subagent-overrides/:agentType", async (c) => {
+  const agentType = c.req.param("agentType")
+  const body = await c.req.json<{ to: string }>()
+
+  if (!agentType.trim()) {
+    return c.json(
+      {
+        error: {
+          message: "agent_type is required",
+          type: "validation_error",
+        },
+      },
+      400,
+    )
+  }
+
+  if (!body.to || typeof body.to !== "string") {
+    return c.json(
+      {
+        error: { message: '"to" field is required', type: "validation_error" },
+      },
+      400,
+    )
+  }
+
+  const config = getConfig()
+  const overrides = {
+    ...config.subagentModelOverrides,
+    [agentType]: body.to,
+  }
+  await saveConfig({ ...config, subagentModelOverrides: overrides })
+  return c.json({ success: true, agentType, to: body.to })
+})
+
+adminRoutes.delete("/api/subagent-overrides/:agentType", async (c) => {
+  const agentType = c.req.param("agentType")
+  const config = getConfig()
+
+  if (
+    !config.subagentModelOverrides
+    || !(agentType in config.subagentModelOverrides)
+  ) {
+    return c.json(
+      { error: { message: "Override not found", type: "not_found" } },
+      404,
+    )
+  }
+
+  const { [agentType]: _removed, ...rest } = config.subagentModelOverrides
+  await saveConfig({ ...config, subagentModelOverrides: rest })
+  return c.json({ success: true })
+})
+
 // Trace stats: aggregated subagent / premium / model usage from JSONL logs
 adminRoutes.get("/api/trace/stats", (c) => {
   const days = Number.parseInt(c.req.query("days") ?? "7", 10)

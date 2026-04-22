@@ -293,6 +293,35 @@ export const adminHtml = `<!DOCTYPE html>
         <div id="traceSummary"><div class="empty-state">Loading trace data...</div></div>
       </div>
       <div class="card">
+        <div class="card-header">
+          <span class="card-title">Subagent Model Overrides</span>
+          <button class="btn btn-primary btn-sm" id="addOverrideBtn">+ Add Override</button>
+        </div>
+        <div style="padding:0 1rem 0.75rem; color:#8b949e; font-size:0.8rem;">
+          Force specific <code>agent_type</code>s (from the <code>__SUBAGENT_MARKER__</code> plugin) to a cheap model. Only requests whose marker matches are affected \u2014 main conversation is never rewritten.
+        </div>
+        <div id="overrideFormArea" style="display:none; margin-bottom:1rem; padding:0 1rem;">
+          <div style="display:flex; gap:0.5rem; align-items:center;">
+            <input class="select" id="overrideAgentType" placeholder="agent_type (e.g. Explore)" style="margin:0; flex:1;">
+            <span style="color:#8b949e; font-size:1.2rem;">\u2192</span>
+            <input class="select" id="overrideModel" list="overrideModelOptions" placeholder="Target model (e.g. gpt-5-mini)" style="margin:0; flex:1;">
+            <datalist id="overrideModelOptions"></datalist>
+            <button class="btn btn-primary btn-sm" id="saveOverrideBtn">Save</button>
+            <button class="btn btn-sm" id="cancelOverrideBtn">Cancel</button>
+          </div>
+        </div>
+        <table style="width:100%; border-collapse:collapse; font-size:0.875rem;">
+          <thead>
+            <tr style="color:#8b949e; text-align:left; border-bottom:1px solid #30363d;">
+              <th style="padding:0.5rem 1rem;">agent_type</th>
+              <th style="padding:0.5rem 1rem;">\u2192 model</th>
+              <th style="padding:0.5rem 1rem; width:80px;">Action</th>
+            </tr>
+          </thead>
+          <tbody id="overrideList"><tr><td colspan="3" class="empty-state">Loading...</td></tr></tbody>
+        </table>
+      </div>
+      <div class="card">
         <div class="card-header"><span class="card-title">Daily breakdown</span></div>
         <div id="traceDayChart"><div class="empty-state">Loading...</div></div>
       </div>
@@ -433,7 +462,7 @@ export const adminHtml = `<!DOCTYPE html>
         if (tab.dataset.tab === 'models') fetchModels();
         if (tab.dataset.tab === 'usage') fetchUsage();
         if (tab.dataset.tab === 'model-mappings') fetchMappings();
-        if (tab.dataset.tab === 'trace') fetchTrace();
+        if (tab.dataset.tab === 'trace') { fetchTrace(); fetchOverrides(); }
       });
     });
     async function fetchSettings() {
@@ -741,7 +770,7 @@ export const adminHtml = `<!DOCTYPE html>
       if (!(e.target instanceof Element)) return;
       const actionEl = e.target.closest('[data-action]');
       if (!actionEl) return;
-      const { action, id, login, from } = actionEl.dataset;
+      const { action, id, login, from, agentType } = actionEl.dataset;
       if (action === 'switch' && id) {
         switchAccount(id);
       } else if (action === 'reconnect' && id) {
@@ -750,6 +779,8 @@ export const adminHtml = `<!DOCTYPE html>
         deleteAccount(id, login || '');
       } else if (action === 'delete-mapping' && from) {
         deleteMapping(from);
+      } else if (action === 'delete-override' && agentType) {
+        deleteOverride(agentType);
       }
     });
 
@@ -965,8 +996,93 @@ export const adminHtml = `<!DOCTYPE html>
         '</tr>'
       ).join('');
     }
-    document.getElementById('refreshTrace').addEventListener('click', fetchTrace);
+    document.getElementById('refreshTrace').addEventListener('click', () => { fetchTrace(); fetchOverrides(); });
     document.getElementById('traceDays').addEventListener('change', fetchTrace);
+
+    // Subagent Model Overrides
+    async function fetchOverrides() {
+      try {
+        const res = await fetch(API_BASE + '/subagent-overrides');
+        const data = await res.json();
+        renderOverrides(data.overrides || {});
+      } catch (e) {
+        document.getElementById('overrideList').innerHTML = '<tr><td colspan="3" class="empty-state">Failed to load overrides</td></tr>';
+      }
+    }
+    function renderOverrides(overrides) {
+      const tbody = document.getElementById('overrideList');
+      const entries = Object.entries(overrides);
+      if (entries.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="3" class="empty-state">No overrides configured. All subagents use their caller\\'s model.</td></tr>';
+        return;
+      }
+      tbody.innerHTML = entries.map(([agentType, model]) =>
+        '<tr style="border-bottom:1px solid #21262d;">' +
+        '<td style="padding:0.5rem 1rem;"><code style="background:#21262d; padding:0.1rem 0.4rem; border-radius:4px; color:#9333ea; font-size:0.8rem;">' + escHtml(agentType) + '</code></td>' +
+        '<td style="padding:0.5rem 1rem;"><code style="background:#21262d; padding:0.1rem 0.4rem; border-radius:4px; font-size:0.8rem;">' + escHtml(model) + '</code></td>' +
+        '<td style="padding:0.5rem 1rem;"><button class="btn btn-danger btn-sm" data-action="delete-override" data-agent-type="' + escHtml(agentType) + '">Delete</button></td>' +
+        '</tr>'
+      ).join('');
+    }
+    async function deleteOverride(agentType) {
+      if (!confirm('Remove override for agent_type "' + agentType + '"?')) return;
+      try {
+        const res = await fetch(API_BASE + '/subagent-overrides/' + encodeURIComponent(agentType), { method: 'DELETE' });
+        if (res.ok) fetchOverrides();
+        else { const d = await res.json(); alert(d.error?.message || 'Failed'); }
+      } catch (e) { alert('Failed to delete override'); }
+    }
+    window.deleteOverride = deleteOverride;
+    async function loadOverrideModelOptions() {
+      const input = document.getElementById('overrideModel');
+      const optionList = document.getElementById('overrideModelOptions');
+      input.value = '';
+      optionList.innerHTML = '';
+      try {
+        const status = await fetchStatus();
+        if (!status.authenticated) {
+          input.placeholder = getModelSuggestionPlaceholder();
+          return;
+        }
+        const res = await fetch('/v1/models');
+        if (!res.ok) throw new Error('Failed to load model suggestions');
+        const data = await res.json();
+        input.placeholder = 'Target model (e.g. gpt-5-mini)';
+        optionList.innerHTML = (data.data || [])
+          .map(m => '<option value="' + escHtml(m.id) + '"></option>')
+          .join('');
+      } catch (e) {
+        input.placeholder = 'Target model (failed to load suggestions)';
+      }
+    }
+    document.getElementById('addOverrideBtn').addEventListener('click', () => {
+      document.getElementById('overrideFormArea').style.display = 'block';
+      document.getElementById('overrideAgentType').value = '';
+      loadOverrideModelOptions();
+      document.getElementById('overrideAgentType').focus();
+    });
+    document.getElementById('cancelOverrideBtn').addEventListener('click', () => {
+      document.getElementById('overrideFormArea').style.display = 'none';
+    });
+    document.getElementById('saveOverrideBtn').addEventListener('click', async () => {
+      const agentType = document.getElementById('overrideAgentType').value.trim();
+      const to = document.getElementById('overrideModel').value.trim();
+      if (!agentType || !to) { alert('Both fields are required'); return; }
+      try {
+        const res = await fetch(API_BASE + '/subagent-overrides/' + encodeURIComponent(agentType), {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ to })
+        });
+        if (res.ok) {
+          document.getElementById('overrideFormArea').style.display = 'none';
+          fetchOverrides();
+        } else {
+          const d = await res.json();
+          alert(d.error?.message || 'Failed to save');
+        }
+      } catch (e) { alert('Failed to save override'); }
+    });
   </script>
 </body>
 </html>`

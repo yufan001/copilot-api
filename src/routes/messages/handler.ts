@@ -3,7 +3,12 @@ import type { Context } from "hono"
 import consola from "consola"
 import { streamSSE } from "hono/streaming"
 
-import { getMappedModel, getSmallModel, resolveAutoModel } from "~/lib/config"
+import {
+  getMappedModel,
+  getSmallModel,
+  getSubagentModelOverride,
+  resolveAutoModel,
+} from "~/lib/config"
 import { createHandlerLogger } from "~/lib/logger"
 import { checkRateLimit } from "~/lib/rate-limit"
 import { getRootSessionId } from "~/lib/session"
@@ -52,6 +57,19 @@ import {
 
 const logger = createHandlerLogger("messages-handler")
 
+const applySubagentModelOverride = (
+  payload: AnthropicMessagesPayload,
+  subagentMarker: SubagentMarker | null,
+): void => {
+  if (!subagentMarker?.agent_type) return
+  const override = getSubagentModelOverride(subagentMarker.agent_type)
+  if (!override || override === payload.model) return
+  consola.info(
+    `[SubagentOverride] agent_type=${subagentMarker.agent_type}: ${payload.model} → ${override}`,
+  )
+  payload.model = override
+}
+
 const resolveResponsesInitiator = (
   model: string,
   subagentMarker: SubagentMarker | null,
@@ -94,6 +112,13 @@ export async function handleCompletion(c: Context) {
   logger.debug("Extracted session ID:", sessionId)
 
   const originalModel = anthropicPayload.model
+
+  // Subagent model override (proxy-layer agent_type whitelist routing).
+  // Only applied when the `__SUBAGENT_MARKER__` was successfully parsed —
+  // main-conversation requests (no marker) are never affected. The override
+  // is applied *before* modelMapping, so users can point at either a Copilot
+  // model id directly or an alias that `modelMapping` will resolve.
+  applySubagentModelOverride(anthropicPayload, subagentMarker)
 
   // fix claude code 2.0.28+ warmup request consume premium request, forcing small model if no tools are used
   // set "CLAUDE_CODE_SUBAGENT_MODEL": "you small model" also can avoid this

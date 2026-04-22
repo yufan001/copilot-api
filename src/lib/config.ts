@@ -20,6 +20,20 @@ export interface AppConfig {
     "none" | "minimal" | "low" | "medium" | "high" | "xhigh"
   >
   modelMapping?: Record<string, string>
+  /**
+   * Force specific models for subagent requests based on their `agent_type`
+   * (provided via the `__SUBAGENT_MARKER__` plugin hook).
+   *
+   * Only requests whose marker is parsed by the `/v1/messages` handler will be
+   * matched. Main-conversation requests (no marker) are never affected.
+   *
+   * Keys are case-sensitive agent_type strings (e.g. "Explore",
+   * "statusline-setup"). Values are the target model id — they go through
+   * `modelMapping` afterwards, so you can write either a Copilot model id
+   * directly (e.g. "gpt-5-mini") or an alias ("haiku") that resolves via
+   * `modelMapping`.
+   */
+  subagentModelOverrides?: Record<string, string>
   useFunctionApplyPatch?: boolean
   rateLimitSeconds?: number
   rateLimitWait?: boolean
@@ -50,6 +64,14 @@ const defaultConfig: AppConfig = {
     "claude-haiku-3-5": "gpt-5-mini",
     "claude-3-5-haiku": "gpt-5-mini",
     "claude-3-5-haiku-20241022": "gpt-5-mini",
+  },
+  subagentModelOverrides: {
+    // High-volume, low-reasoning subagent workflows (grep + read loops,
+    // maintenance scripts) — force cheap model to avoid burning premium.
+    // Delete an entry in admin UI / config.json to restore the original model.
+    Explore: "gpt-5-mini",
+    "statusline-setup": "gpt-5-mini",
+    "output-style-setup": "gpt-5-mini",
   },
   useFunctionApplyPatch: true,
   rateLimitWait: false,
@@ -123,27 +145,50 @@ function mergeDefaultExtraPrompts(config: AppConfig): {
   }
 }
 
+/**
+ * Seed `subagentModelOverrides` when the field is missing from config.json
+ * (first run / older install). If the user explicitly sets it to `{}` we
+ * respect that and do NOT re-seed — they opted out.
+ */
+function mergeDefaultSubagentOverrides(config: AppConfig): {
+  mergedConfig: AppConfig
+  changed: boolean
+} {
+  if (config.subagentModelOverrides !== undefined) {
+    return { mergedConfig: config, changed: false }
+  }
+  return {
+    mergedConfig: {
+      ...config,
+      subagentModelOverrides: defaultConfig.subagentModelOverrides,
+    },
+    changed: true,
+  }
+}
+
 export function mergeConfigWithDefaults(): AppConfig {
   const config = readConfigFromDisk()
-  const { mergedConfig, changed } = mergeDefaultExtraPrompts(config)
+  const extraPromptsResult = mergeDefaultExtraPrompts(config)
+  const overridesResult = mergeDefaultSubagentOverrides(
+    extraPromptsResult.mergedConfig,
+  )
+  const finalConfig = overridesResult.mergedConfig
+  const changed = extraPromptsResult.changed || overridesResult.changed
 
   if (changed) {
     try {
       fs.writeFileSync(
         PATHS.CONFIG_PATH,
-        `${JSON.stringify(mergedConfig, null, 2)}\n`,
+        `${JSON.stringify(finalConfig, null, 2)}\n`,
         "utf8",
       )
     } catch (writeError) {
-      consola.warn(
-        "Failed to write merged extraPrompts to config file",
-        writeError,
-      )
+      consola.warn("Failed to write merged defaults to config file", writeError)
     }
   }
 
-  cachedConfig = mergedConfig
-  return mergedConfig
+  cachedConfig = finalConfig
+  return finalConfig
 }
 
 export function getConfig(): AppConfig {
@@ -195,6 +240,22 @@ export function getReasoningEffortForModel(
 export function getMappedModel(model: string): string {
   const config = getConfig()
   return config.modelMapping?.[model] ?? model
+}
+
+/**
+ * Returns the configured override target model for a given subagent
+ * `agent_type`, or `null` if no override is configured.
+ *
+ * Matching is exact and case-sensitive against the `agent_type` field from
+ * the `__SUBAGENT_MARKER__` injected by the `copilot-api-subagent-marker`
+ * plugin hook.
+ */
+export function getSubagentModelOverride(
+  agentType: string | null | undefined,
+): string | null {
+  if (!agentType) return null
+  const config = getConfig()
+  return config.subagentModelOverrides?.[agentType] ?? null
 }
 
 /**
