@@ -335,10 +335,11 @@ export const adminHtml = `<!DOCTYPE html>
                 <th style="padding:0.5rem; text-align:right;">requests</th>
                 <th style="padding:0.5rem; text-align:right;">sessions</th>
                 <th style="padding:0.5rem; text-align:right;">avg body</th>
-                <th style="padding:0.5rem; text-align:right;">premium</th>
+                <th style="padding:0.5rem; text-align:right;">premium used</th>
+                <th style="padding:0.5rem; text-align:right;">% of month</th>
               </tr>
             </thead>
-            <tbody id="traceAgentTypeTable"><tr><td colspan="5" class="empty-state">Loading...</td></tr></tbody>
+            <tbody id="traceAgentTypeTable"><tr><td colspan="6" class="empty-state">Loading...</td></tr></tbody>
           </table>
         </div>
       </div>
@@ -349,12 +350,14 @@ export const adminHtml = `<!DOCTYPE html>
             <thead>
               <tr style="color:#8b949e; text-align:left; border-bottom:1px solid #30363d;">
                 <th style="padding:0.5rem;">model</th>
+                <th style="padding:0.5rem; text-align:right;" title="Copilot premium request multiplier">rate</th>
                 <th style="padding:0.5rem; text-align:right;">total</th>
                 <th style="padding:0.5rem; text-align:right;">subagent</th>
+                <th style="padding:0.5rem; text-align:right;" title="Expected premium units = count × multiplier">est. units</th>
                 <th style="padding:0.5rem; text-align:right;">total bytes</th>
               </tr>
             </thead>
-            <tbody id="traceModelTable"><tr><td colspan="4" class="empty-state">Loading...</td></tr></tbody>
+            <tbody id="traceModelTable"><tr><td colspan="6" class="empty-state">Loading...</td></tr></tbody>
           </table>
         </div>
       </div>
@@ -897,17 +900,54 @@ export const adminHtml = `<!DOCTYPE html>
       const m = /rem=([\\d.]+)/.exec(raw);
       return m ? m[1] : '';
     }
+    function fmtUnits(u) {
+      if (u == null) return 'n/a';
+      if (u >= 100) return u.toFixed(0);
+      if (u >= 10) return u.toFixed(1);
+      return u.toFixed(2);
+    }
+    function fmtPct(p) {
+      if (p == null) return 'n/a';
+      return p.toFixed(2) + '%';
+    }
     function renderTraceSummary(data) {
-      const card = (label, value, hint) =>
+      const q = data.quota || {};
+      const card = (label, value, hint, sub) =>
         '<div class="usage-card"><div class="usage-title">' + label + '</div>' +
         '<div style="font-size:1.5rem; font-weight:600; margin:0.5rem 0; color:#c9d1d9;">' + value + '</div>' +
-        '<div class="usage-stats"><span>' + (hint || '') + '</span></div></div>';
+        '<div class="usage-stats"><span>' + (hint || '') + '</span>' +
+        (sub ? '<span style="color:#8b949e;">' + sub + '</span>' : '') + '</div></div>';
       const ratio = (data.subagentRatio * 100).toFixed(1) + '%';
+
+      // "Used / Total" with monthly percentage
+      const usedPct = q.usedPercent;
+      const usedValue = q.usedUnits != null && q.entitled != null
+        ? fmtUnits(q.usedUnits) + ' / ' + q.entitled
+        : 'n/a';
+      const usedHint = usedPct != null ? fmtPct(usedPct) + ' used this month' : '';
+      // Remaining translated to "how many calls left"
+      const remUnits = q.remainingUnits;
+      let remHint = '';
+      if (remUnits != null) {
+        const opus = Math.floor(remUnits / 7.5);
+        const gpt5 = Math.floor(remUnits / 1);
+        remHint = '≈ ' + gpt5 + '× gpt-5.4 · ' + opus + '× opus';
+      }
+      const remValue = remUnits != null ? fmtUnits(remUnits) + ' units' : 'n/a';
+      const remSub = q.remainingPercent != null ? fmtPct(q.remainingPercent) + ' left' : '';
+
+      // Window + today consumption in units (with legacy percent in hint)
+      const winUnits = data.totalPremiumConsumedUnits;
+      const todayUnits = data.todayPremiumConsumedUnits;
+      const winValue = winUnits != null ? fmtUnits(winUnits) + ' units' : data.totalPremiumConsumed.toFixed(2) + '%';
+      const winHint = 'today: ' + (todayUnits != null ? fmtUnits(todayUnits) + ' units' : data.todayPremiumConsumed.toFixed(2) + '%');
+      const winSub = '(' + data.totalPremiumConsumed.toFixed(2) + '% of monthly quota)';
+
       const html = '<div class="usage-grid">' +
-        card('Total requests (' + data.windowDays + 'd)', data.totalRequests, data.totalSubagent + ' from subagent') +
-        card('Subagent ratio', ratio, 'lower is better') +
-        card('Premium consumed (' + data.windowDays + 'd)', data.totalPremiumConsumed.toFixed(2), 'today: ' + data.todayPremiumConsumed.toFixed(2)) +
-        card('Premium remaining', parsePremiumRem(data.latestPremiumRemaining) || 'n/a', 'last seen snapshot') +
+        card('Premium used this month', usedValue, usedHint, q.resetAt ? 'reset: ' + q.resetAt.slice(0, 10) : '') +
+        card('Remaining', remValue, remHint, remSub) +
+        card('Consumed in window (' + data.windowDays + 'd)', winValue, winHint, winSub) +
+        card('Requests (' + data.windowDays + 'd)', data.totalRequests, data.totalSubagent + ' from subagent (' + ratio + ')', '') +
         '</div>';
       document.getElementById('traceSummary').innerHTML = html;
     }
@@ -921,13 +961,15 @@ export const adminHtml = `<!DOCTYPE html>
       const rows = days.map(d => {
         const subaPct = (d.subagent / max) * 100;
         const mainPct = (d.mainConversation / max) * 100;
-        return '<div style="display:grid; grid-template-columns:90px 1fr 130px; gap:0.5rem; align-items:center; margin-bottom:0.4rem; font-size:0.75rem;">' +
+        const units = d.premiumConsumedUnits != null ? d.premiumConsumedUnits : 0;
+        const pctOfMonth = d.premiumConsumed.toFixed(2);
+        return '<div style="display:grid; grid-template-columns:90px 1fr 180px; gap:0.5rem; align-items:center; margin-bottom:0.4rem; font-size:0.75rem;">' +
           '<div style="color:#8b949e; font-family:monospace;">' + d.date + '</div>' +
           '<div style="display:flex; height:18px; background:#21262d; border-radius:4px; overflow:hidden;">' +
             '<div style="width:' + mainPct + '%; background:#58a6ff;" title="main: ' + d.mainConversation + '"></div>' +
             '<div style="width:' + subaPct + '%; background:#9333ea;" title="subagent: ' + d.subagent + '"></div>' +
           '</div>' +
-          '<div style="text-align:right; color:#8b949e;">' + d.total + ' req &middot; ' + d.premiumConsumed.toFixed(2) + 'p</div>' +
+          '<div style="text-align:right; color:#8b949e;">' + d.total + ' req &middot; <span style="color:#c9d1d9;">' + fmtUnits(units) + '</span> units (' + pctOfMonth + '%)</div>' +
         '</div>';
       }).join('');
       const legend = '<div style="display:flex; gap:1rem; margin-top:0.75rem; font-size:0.75rem; color:#8b949e;">' +
@@ -940,34 +982,60 @@ export const adminHtml = `<!DOCTYPE html>
       const rows = data.byAgentType || [];
       const tbody = document.getElementById('traceAgentTypeTable');
       if (rows.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="5" class="empty-state">No subagent activity</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="6" class="empty-state">No subagent activity</td></tr>';
         return;
       }
-      tbody.innerHTML = rows.map(r =>
-        '<tr style="border-bottom:1px solid #21262d;">' +
+      tbody.innerHTML = rows.map(r => {
+        const units = r.premiumConsumedUnits != null ? r.premiumConsumedUnits : 0;
+        const unitsCell = units > 0
+          ? '<span style="color:#c9d1d9;">' + fmtUnits(units) + '</span>'
+          : '<span style="color:#8b949e;">0</span>';
+        return '<tr style="border-bottom:1px solid #21262d;">' +
         '<td style="padding:0.5rem;"><code style="background:#21262d; padding:0.1rem 0.4rem; border-radius:4px; font-size:0.75rem;">' + escHtml(r.agentType) + '</code></td>' +
         '<td style="padding:0.5rem; text-align:right;">' + r.count + '</td>' +
         '<td style="padding:0.5rem; text-align:right;">' + r.distinctSessions + '</td>' +
         '<td style="padding:0.5rem; text-align:right;">' + r.avgBodyKb.toFixed(1) + ' KB</td>' +
-        '<td style="padding:0.5rem; text-align:right;">' + r.premiumConsumed.toFixed(2) + '</td>' +
-        '</tr>'
-      ).join('');
+        '<td style="padding:0.5rem; text-align:right;">' + unitsCell + '</td>' +
+        '<td style="padding:0.5rem; text-align:right; color:#8b949e;">' + r.premiumConsumed.toFixed(2) + '%</td>' +
+        '</tr>';
+      }).join('');
     }
     function renderTraceModelTable(data) {
       const rows = data.byModel || [];
       const tbody = document.getElementById('traceModelTable');
       if (rows.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="4" class="empty-state">No requests yet</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="6" class="empty-state">No requests yet</td></tr>';
         return;
       }
-      tbody.innerHTML = rows.map(r =>
-        '<tr style="border-bottom:1px solid #21262d;">' +
+      tbody.innerHTML = rows.map(r => {
+        const mult = r.multiplier;
+        let multCell;
+        if (mult == null) {
+          multCell = '<span style="color:#f0883e;" title="Unknown multiplier">?</span>';
+        } else if (mult === 0) {
+          multCell = '<span style="color:#3fb950;" title="Free tier">FREE</span>';
+        } else if (mult >= 5) {
+          multCell = '<span style="color:#f85149;" title="Premium model">×' + mult + '</span>';
+        } else if (mult > 1) {
+          multCell = '<span style="color:#f0883e;" title="Premium model">×' + mult + '</span>';
+        } else {
+          multCell = '<span style="color:#8b949e;">×' + mult + '</span>';
+        }
+        const expected = r.expectedUnits;
+        const expectedCell = expected == null
+          ? '<span style="color:#8b949e;">-</span>'
+          : expected === 0
+            ? '<span style="color:#3fb950;">0</span>'
+            : '<span style="color:#c9d1d9;">' + fmtUnits(expected) + '</span>';
+        return '<tr style="border-bottom:1px solid #21262d;">' +
         '<td style="padding:0.5rem;"><code style="background:#21262d; padding:0.1rem 0.4rem; border-radius:4px; font-size:0.75rem;">' + escHtml(r.model || 'unknown') + '</code></td>' +
+        '<td style="padding:0.5rem; text-align:right;">' + multCell + '</td>' +
         '<td style="padding:0.5rem; text-align:right;">' + r.count + '</td>' +
         '<td style="padding:0.5rem; text-align:right;">' + r.subagentCount + '</td>' +
-        '<td style="padding:0.5rem; text-align:right;">' + (r.totalBytes / 1024 / 1024).toFixed(2) + ' MB</td>' +
-        '</tr>'
-      ).join('');
+        '<td style="padding:0.5rem; text-align:right;">' + expectedCell + '</td>' +
+        '<td style="padding:0.5rem; text-align:right; color:#8b949e;">' + (r.totalBytes / 1024 / 1024).toFixed(2) + ' MB</td>' +
+        '</tr>';
+      }).join('');
     }
     function renderTraceRecentTable(data) {
       const rows = data.recent || [];

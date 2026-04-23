@@ -27,6 +27,16 @@ export interface UpstreamTraceEntry {
   x_interaction_id: string | null
   x_initiator: string | null
   x_interaction_type: string | null
+  /**
+   * Copilot CAPI `X-Agent-Task-Id`: a stable per-agent-instance identifier.
+   * For subagent calls we set this to the `SubagentMarker.agent_id` injected
+   * by the Claude Code `SubagentStart` hook (so all upstream requests from
+   * the same subagent share the same task id).
+   * Null on main-conversation requests — we do not currently generate one
+   * for the root agent, since Claude Code does not expose a stable instance
+   * id to the proxy layer.
+   */
+  x_agent_task_id: string | null
   has_vision: boolean
   anthropic_beta: string | null
   /** Parsed by the handler (currently only `/v1/messages` supports it). */
@@ -72,7 +82,23 @@ const ensureLogDir = () => {
   }
 }
 
+/**
+ * Returns true when the current process is a unit-test runner.
+ *
+ * `bun test` and `vitest` both set `NODE_ENV=test` automatically.
+ * Skipping trace I/O during tests prevents test fixtures (mock model
+ * names like `gpt-test`, `smoke-test-model`, `gpt-4.1`) from polluting
+ * the production JSONL log and skewing the /admin Trace dashboard.
+ *
+ * Tests that explicitly *want* to assert on trace output can set
+ * `COPILOT_API_FORCE_TRACE=1` to opt back in.
+ */
+const isTestEnv = (): boolean =>
+  process.env.NODE_ENV === "test" && !process.env.COPILOT_API_FORCE_TRACE
+
 export const recordUpstream = (entry: UpstreamTraceEntry): void => {
+  if (isTestEnv()) return
+
   try {
     ensureLogDir()
     fs.appendFileSync(getTodayJsonlPath(), `${JSON.stringify(entry)}\n`)
@@ -119,14 +145,70 @@ export const extractInterestingHeaders = (
 /* Aggregation for /admin Trace tab                                    */
 /* ------------------------------------------------------------------ */
 
+/**
+ * Copilot per-model premium request multiplier.
+ *
+ * Source: GitHub Copilot's public pricing page (numbers verified against
+ * live `x-quota-snapshot-premium_interactions` deltas in trace logs).
+ *
+ * A "premium unit" is the base ration where 1 unit = 1 request on a 1× model.
+ * The monthly entitlement (`ent`) is expressed in these units (e.g. 1500).
+ *
+ * Lookups are done with a `.includes(key)` scan so we match both the short
+ * marketing name (`gpt-5-mini`) and the fully qualified id
+ * (`gpt-5-mini-20251010` / `claude-opus-4.7`) without maintaining a second
+ * table. First match wins — order matters, put the most specific keys first.
+ */
+const MODEL_MULTIPLIERS: Array<{ match: string; multiplier: number }> = [
+  { match: "gpt-5-mini", multiplier: 0 },
+  { match: "gpt-4o-mini", multiplier: 0 },
+  { match: "o4-mini", multiplier: 0.33 },
+  { match: "gpt-4.1", multiplier: 0 },
+  { match: "claude-haiku", multiplier: 0.33 },
+  { match: "gpt-5.4", multiplier: 1 },
+  { match: "gpt-5", multiplier: 1 },
+  { match: "claude-sonnet", multiplier: 1 },
+  { match: "claude-3-5-sonnet", multiplier: 1 },
+  { match: "gemini-2", multiplier: 1 },
+  { match: "o1-preview", multiplier: 10 },
+  { match: "o1", multiplier: 1 },
+  { match: "o3-mini", multiplier: 0.33 },
+  { match: "o3", multiplier: 1 },
+  { match: "claude-opus-4.7", multiplier: 7.5 },
+  { match: "claude-opus-4.6", multiplier: 7.5 },
+  { match: "claude-opus", multiplier: 7.5 },
+  { match: "goldeneye", multiplier: 0 },
+]
+
+export const getModelMultiplier = (model: string | null): number | null => {
+  if (!model) return null
+  const lower = model.toLowerCase()
+  for (const { match, multiplier } of MODEL_MULTIPLIERS) {
+    if (lower.includes(match)) return multiplier
+  }
+  return null
+}
+
 export interface TraceDayBucket {
   /** YYYY-MM-DD in local TZ (matches the JSONL file naming). */
   date: string
   total: number
   subagent: number
   mainConversation: number
-  /** Sum of premium drops between consecutive entries (ignores month resets). */
+  /**
+   * Sum of `rem` drops between consecutive entries, in **percent of monthly
+   * entitlement** (e.g. 0.5 means 0.5% of the month's budget, which on a
+   * 1500-unit plan = 7.5 premium units = 1 Opus call).
+   *
+   * Kept for backwards compatibility with external consumers of this field.
+   * New UI should prefer `premiumConsumedUnits`.
+   */
   premiumConsumed: number
+  /**
+   * Same drop, converted to absolute premium units using the plan's `ent`
+   * (e.g. 1500). 1 unit ≈ 1 gpt-5.4 call, 7.5 units = 1 Opus call.
+   */
+  premiumConsumedUnits: number
   /** Total bytes pushed upstream for that day. */
   totalBytes: number
 }
@@ -136,8 +218,10 @@ export interface TraceAgentTypeBucket {
   count: number
   distinctSessions: number
   avgBodyKb: number
-  /** Sum of premium drops attributable to this agent_type. */
+  /** Percent of monthly entitlement (legacy field). */
   premiumConsumed: number
+  /** Absolute premium units consumed by this agent_type. */
+  premiumConsumedUnits: number
 }
 
 export interface TraceModelBucket {
@@ -145,6 +229,14 @@ export interface TraceModelBucket {
   count: number
   subagentCount: number
   totalBytes: number
+  /**
+   * Per-call multiplier on Copilot's premium quota
+   * (0 = free / mini, 1 = baseline / sonnet / gpt-5.4, 7.5 = opus).
+   * `null` if we don't know the pricing yet.
+   */
+  multiplier: number | null
+  /** count × multiplier (when multiplier known), undefined otherwise. */
+  expectedUnits: number | null
 }
 
 export interface TraceRecentEntry {
@@ -162,16 +254,50 @@ export interface TraceRecentEntry {
   xInteractionId: string | null
 }
 
+/**
+ * Derived quota view — everything the /admin UI needs to show
+ * "used / total + remaining → N opus calls" without doing arithmetic in JS.
+ *
+ * All figures reflect the *latest* `x-quota-snapshot-premium_interactions`
+ * snapshot we've seen during the query window.
+ */
+export interface QuotaSnapshot {
+  /** Raw `ent=...` from the snapshot; monthly entitlement in premium units. */
+  entitled: number | null
+  /** Raw `rem=...` from the snapshot; percent of entitlement remaining (0-100). */
+  remainingPercent: number | null
+  /** `entitled × remainingPercent / 100`. */
+  remainingUnits: number | null
+  /** `entitled - remainingUnits`. */
+  usedUnits: number | null
+  /** Used / entitled, 0-100. */
+  usedPercent: number | null
+  /** ISO timestamp of the snapshot that produced these numbers. */
+  snapshotAt: string | null
+  /** Raw header string, kept for diagnostics. */
+  rawHeader: string | null
+  /** Reset date from `rst=...` (ISO), when the monthly quota rolls over. */
+  resetAt: string | null
+}
+
 export interface TraceStats {
   generatedAt: string
   windowDays: number
   totalRequests: number
   totalSubagent: number
   subagentRatio: number
+  /** Percent drop across the window (legacy units). */
   totalPremiumConsumed: number
+  /** Percent drop for today only (legacy units). */
   todayPremiumConsumed: number
-  /** Latest premium_interactions snapshot we've seen. */
+  /** Absolute premium units consumed across the window. */
+  totalPremiumConsumedUnits: number
+  /** Absolute premium units consumed today. */
+  todayPremiumConsumedUnits: number
+  /** Latest premium_interactions snapshot we've seen (raw). */
   latestPremiumRemaining: string | null
+  /** Parsed view of the latest snapshot (entitled / remaining / used). */
+  quota: QuotaSnapshot
   byDay: Array<TraceDayBucket>
   byAgentType: Array<TraceAgentTypeBucket>
   byModel: Array<TraceModelBucket>
@@ -186,6 +312,36 @@ const parsePremiumRemaining = (raw: string | undefined): number | null => {
   if (!match) return null
   const v = Number.parseFloat(match[1])
   return Number.isFinite(v) ? v : null
+}
+
+/** Parses `ent=...` (monthly entitlement in premium units). */
+const parsePremiumEntitled = (raw: string | undefined): number | null => {
+  if (!raw) return null
+  const match = /ent=([\d.]+)/.exec(raw)
+  if (!match) return null
+  const v = Number.parseFloat(match[1])
+  return Number.isFinite(v) && v > 0 ? v : null
+}
+
+/** Parses `rst=...` (ISO timestamp for when this quota rolls over). */
+const parsePremiumResetAt = (raw: string | undefined): string | null => {
+  if (!raw) return null
+  const match = /rst=([^&]+)/.exec(raw)
+  if (!match) return null
+  try {
+    return decodeURIComponent(match[1])
+  } catch {
+    return match[1]
+  }
+}
+
+/**
+ * Converts a "percent drop" (e.g. 0.5 for 0.5%) into absolute premium units
+ * using the account's entitlement. Returns 0 when we don't know `ent` yet.
+ */
+const percentToUnits = (percent: number, entitled: number | null): number => {
+  if (!entitled || percent <= 0) return 0
+  return (percent * entitled) / 100
 }
 
 const formatLocalDate = (d: Date): string => d.toLocaleDateString("sv-SE")
@@ -232,6 +388,8 @@ interface AggState {
   totalPremium: number
   todayPremium: number
   latestPremium: string | null
+  latestPremiumTs: string | null
+  latestEntitled: number | null
   /**
    * Tracks the most recent premium snapshot in time order across all entries,
    * regardless of session. Drops between consecutive entries are attributed
@@ -248,6 +406,7 @@ const newDayBucket = (date: string): TraceDayBucket => ({
   subagent: 0,
   mainConversation: 0,
   premiumConsumed: 0,
+  premiumConsumedUnits: 0,
   totalBytes: 0,
 })
 
@@ -315,8 +474,11 @@ const computePremiumDrop = (
   const remNum = parsePremiumRemaining(remRaw ?? undefined)
   if (remNum === null) return 0
 
-  // Track latest snapshot string for display.
+  // Track latest snapshot string + ts + entitled for display.
   state.latestPremium = remRaw
+  state.latestPremiumTs = entry.ts
+  const entNum = parsePremiumEntitled(remRaw ?? undefined)
+  if (entNum !== null) state.latestEntitled = entNum
 
   const prev = state.prevPremiumGlobal
   state.prevPremiumGlobal = remNum
@@ -348,6 +510,11 @@ const handleEntry = (
   const drop = computePremiumDrop(state, entry)
   if (drop > 0) {
     day.premiumConsumed += drop
+    // Convert at-rest: we'll recompute units at finalize time using the
+    // *latest* known entitlement, so a snapshot seen later in the window
+    // still gives the earlier days the right units. For per-day accuracy
+    // we also accumulate units eagerly with the best ent known *right now*.
+    day.premiumConsumedUnits += percentToUnits(drop, state.latestEntitled)
     state.totalPremium += drop
     if (dateKey === todayKey) state.todayPremium += drop
   }
@@ -389,28 +556,66 @@ const finalizeAgentTypes = (state: AggState): Array<TraceAgentTypeBucket> => {
   const out: Array<TraceAgentTypeBucket> = []
   for (const [at, count] of state.byAgentTypeCount.entries()) {
     const bytes = state.byAgentTypeBytes.get(at) ?? 0
+    const premium = state.byAgentTypePremium.get(at) ?? 0
     out.push({
       agentType: at,
       count,
       distinctSessions: state.byAgentTypeSessions.get(at)?.size ?? 0,
       avgBodyKb: count > 0 ? bytes / count / 1024 : 0,
-      premiumConsumed: state.byAgentTypePremium.get(at) ?? 0,
+      premiumConsumed: premium,
+      premiumConsumedUnits: percentToUnits(premium, state.latestEntitled),
     })
   }
-  return out.sort((a, b) => b.count - a.count)
+  return out.sort((a, b) => b.premiumConsumed - a.premiumConsumed)
 }
 
 const finalizeModels = (state: AggState): Array<TraceModelBucket> => {
   const out: Array<TraceModelBucket> = []
   for (const [m, count] of state.byModelCount.entries()) {
+    const multiplier = getModelMultiplier(m)
     out.push({
       model: m,
       count,
       subagentCount: state.byModelSubagent.get(m) ?? 0,
       totalBytes: state.byModelBytes.get(m) ?? 0,
+      multiplier,
+      expectedUnits: multiplier === null ? null : count * multiplier,
     })
   }
-  return out.sort((a, b) => b.count - a.count)
+  return out.sort((a, b) => {
+    // Rank by expected units first (known cost), fall back to raw count.
+    const au = a.expectedUnits ?? -1
+    const bu = b.expectedUnits ?? -1
+    if (au !== bu) return bu - au
+    return b.count - a.count
+  })
+}
+
+const buildQuotaSnapshot = (state: AggState): QuotaSnapshot => {
+  const raw = state.latestPremium
+  const entitled = state.latestEntitled
+  const remainingPercent = parsePremiumRemaining(raw ?? undefined)
+  const resetAt = parsePremiumResetAt(raw ?? undefined)
+  const remainingUnits =
+    entitled !== null && remainingPercent !== null ?
+      (entitled * remainingPercent) / 100
+    : null
+  const usedUnits =
+    entitled !== null && remainingUnits !== null ?
+      entitled - remainingUnits
+    : null
+  const usedPercent = remainingPercent !== null ? 100 - remainingPercent : null
+
+  return {
+    entitled,
+    remainingPercent,
+    remainingUnits,
+    usedUnits,
+    usedPercent,
+    snapshotAt: state.latestPremiumTs,
+    rawHeader: raw,
+    resetAt,
+  }
 }
 
 interface ReadTraceStatsOptions {
@@ -441,6 +646,8 @@ export const readTraceStats = (
     totalPremium: 0,
     todayPremium: 0,
     latestPremium: null,
+    latestPremiumTs: null,
+    latestEntitled: null,
     prevPremiumGlobal: null,
   }
 
@@ -464,6 +671,18 @@ export const readTraceStats = (
     a.date < b.date ? -1 : 1,
   )
 
+  // Ensure day-level units use the *final* known entitlement. If we only
+  // learned `ent` late in the window, earlier days may have zero units even
+  // though they had percent drops — recompute here so the chart is coherent.
+  if (state.latestEntitled !== null) {
+    for (const d of byDay) {
+      d.premiumConsumedUnits = percentToUnits(
+        d.premiumConsumed,
+        state.latestEntitled,
+      )
+    }
+  }
+
   return {
     generatedAt: new Date().toISOString(),
     windowDays: days,
@@ -472,7 +691,16 @@ export const readTraceStats = (
     subagentRatio: state.total > 0 ? state.totalSubagent / state.total : 0,
     totalPremiumConsumed: state.totalPremium,
     todayPremiumConsumed: state.todayPremium,
+    totalPremiumConsumedUnits: percentToUnits(
+      state.totalPremium,
+      state.latestEntitled,
+    ),
+    todayPremiumConsumedUnits: percentToUnits(
+      state.todayPremium,
+      state.latestEntitled,
+    ),
     latestPremiumRemaining: state.latestPremium,
+    quota: buildQuotaSnapshot(state),
     byDay,
     byAgentType: finalizeAgentTypes(state),
     byModel: finalizeModels(state),

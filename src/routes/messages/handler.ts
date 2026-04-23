@@ -75,15 +75,21 @@ const resolveResponsesInitiator = (
   subagentMarker: SubagentMarker | null,
   initiator: "agent" | "user",
 ): "agent" | "user" => {
-  const onlyResponses =
-    shouldUseResponsesApi(model) && !shouldUseMessagesApi(model)
-  if (subagentMarker && onlyResponses) {
-    if (initiator === "agent") {
+  // Subagent calls are never user-initiated. The provider layer
+  // (applyInteractionHeaders) already pins x-initiator to "agent" whenever a
+  // SubagentMarker is present, but we still normalize the value flowing into
+  // the Responses pipeline so downstream logging/translation sees a
+  // consistent "agent" for subagent rounds — including on responses-only
+  // models where we previously force-flipped to "user".
+  if (subagentMarker) {
+    if (initiator !== "agent") {
+      const onlyResponses =
+        shouldUseResponsesApi(model) && !shouldUseMessagesApi(model)
       consola.info(
-        `[Auto] Model ${model} only supports /responses — forcing x-initiator: user for subagent`,
+        `[Subagent] ${model}${onlyResponses ? " (responses-only)" : ""}: x-initiator pinned to "agent"`,
       )
     }
-    return "user"
+    return "agent"
   }
   return initiator
 }

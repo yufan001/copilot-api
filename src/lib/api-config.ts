@@ -1,5 +1,7 @@
 import { randomUUID } from "node:crypto"
 
+import type { SubagentMarker } from "~/routes/messages/subagent-marker"
+
 import type { State } from "./state"
 
 export const standardHeaders = () => ({
@@ -36,14 +38,38 @@ export const copilotHeaders = (state: State, vision: boolean = false) => {
   return headers
 }
 
+/**
+ * Writes Copilot CAPI subagent/interaction headers onto the given mutable
+ * headers map.
+ *
+ * Header semantics follow the reverse-engineered Copilot CLI SDK
+ * (@github/copilot 1.0.34, `sdk/index.js:buildContextHeaders`):
+ *
+ * - `x-interaction-id`      — session-level, subagents inherit from parent.
+ * - `x-agent-task-id`       — unique per agent *instance*; for our proxy we
+ *                              reuse the marker's `agent_id` (assigned by the
+ *                              Claude Code `SubagentStart` hook) so multiple
+ *                              upstream calls from the same subagent share the
+ *                              same task id.
+ * - `x-initiator`           — "agent" for subagent calls (the agent, not the
+ *                              user, initiated this request). Main-conversation
+ *                              `x-initiator` is decided elsewhere by message
+ *                              role.
+ * - `x-interaction-type`    — "conversation-subagent" for subagents.
+ *
+ * Parent tracking (`x-parent-agent-id`) is intentionally NOT set here: the
+ * `SubagentMarker` injected by Claude Code does not carry a parent id today.
+ * We leave it unset rather than guess.
+ */
 export const prepareSubagentHeaders = (
   sessionId: string | undefined,
-  isSubagent: boolean,
+  subagentMarker: SubagentMarker | null | undefined,
   headers: Record<string, string>,
 ): void => {
-  if (isSubagent) {
+  if (subagentMarker) {
     headers["x-initiator"] = "agent"
     headers["x-interaction-type"] = "conversation-subagent"
+    headers["x-agent-task-id"] = subagentMarker.agent_id
   }
 
   if (sessionId) {

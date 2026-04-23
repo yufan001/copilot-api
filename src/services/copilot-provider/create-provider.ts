@@ -78,6 +78,55 @@ export interface CopilotRequestOptions {
 }
 
 /**
+ * Applies subagent/interaction/initiator headers to the outbound request.
+ *
+ * NOTE — `x-interaction-type: conversation-user` is intentionally NOT set
+ * here, even though Copilot CLI sets it. CLI's PremiumRequestProcessor
+ * only stamps it on the *first* request of a fresh user turn (it tracks
+ * processed user messages in a client-side state machine). A stateless
+ * proxy like ours can't reproduce that — every request sees the full
+ * `messages[]` and Claude Code's tool-use loop sends `tool_result` as
+ * role=user, which would cause us to stamp `conversation-user` on every
+ * tool round. Empirically this caused Copilot to bill ~0.5 premium per
+ * tool round (2.5 premium in 6 minutes on 2026-04-23). See trace
+ * upstream-trace-2026-04-23.jsonl 02:11:35 → 02:16:29 for evidence.
+ *
+ * Until we have a reliable per-session "unprocessed user message"
+ * tracker, leave `x-interaction-type` unset on main-conversation calls
+ * (Copilot's default `Openai-Intent: conversation-agent` applies).
+ * Subagent requests still get `conversation-subagent` via
+ * `prepareSubagentHeaders` — that's safe because the marker correctly
+ * identifies the spawn boundary.
+ */
+const applyInteractionHeaders = (
+  headers: Record<string, string>,
+  options: CopilotRequestOptions,
+): void => {
+  prepareSubagentHeaders(
+    options.sessionId,
+    options.subagentMarker ?? null,
+    headers,
+  )
+
+  // When a SubagentMarker is present, prepareSubagentHeaders has already set
+  // x-initiator: agent. We must NOT let the message-role-inferred initiator
+  // (computed from the last user message in the Anthropic payload) overwrite
+  // it back to "user" — the combination
+  //   x-interaction-type: conversation-subagent + x-initiator: user
+  // is exactly what causes Copilot to bill ~0.5 premium per subagent round
+  // (same root cause as the main-conversation conversation-user issue
+  // documented above, just on the subagent path).
+  // Subagent tool calls are by definition not user-initiated, so force agent.
+  if (options.initiator && !options.subagentMarker) {
+    headers["x-initiator"] = options.initiator
+  }
+
+  if (options.extraHeaders) {
+    Object.assign(headers, options.extraHeaders)
+  }
+}
+
+/**
  * Low-level Copilot API request function.
  *
  * Combines the provider's auth/retry infrastructure with the project's
@@ -95,29 +144,16 @@ export async function copilotRequest(
     ...copilotHeaders(state, options.vision),
   }
 
-  // prepareSubagentHeaders sets x-initiator: agent when subagentMarker is set.
-  // options.initiator is applied AFTER so it can override that value
-  // (e.g. forcing "user" for models that reject x-initiator: agent).
-  prepareSubagentHeaders(
-    options.sessionId,
-    Boolean(options.subagentMarker),
-    headers,
-  )
-
-  if (options.initiator) {
-    headers["x-initiator"] = options.initiator
-  }
-
-  if (options.extraHeaders) {
-    Object.assign(headers, options.extraHeaders)
-  }
+  applyInteractionHeaders(headers, options)
 
   const copilotFetch = createCopilotFetch()
   const url = `${copilotBaseUrl(state)}${options.path}`
   const method = options.method ?? "POST"
 
+  const taskIdHead = headers["x-agent-task-id"]
+  const taskIdPreview = taskIdHead ? taskIdHead.slice(0, 8) : "none"
   consola.debug(
-    `[copilotRequest] ${method} ${options.path} | x-initiator=${headers["x-initiator"] ?? "none"} | x-interaction-type=${headers["x-interaction-type"] ?? "none"}`,
+    `[copilotRequest] ${method} ${options.path} | x-initiator=${headers["x-initiator"] ?? "none"} | x-interaction-type=${headers["x-interaction-type"] ?? "none"} | x-agent-task-id=${taskIdPreview}`,
   )
 
   const baseEntry = buildTraceBase(method, headers, options)
@@ -195,6 +231,7 @@ const buildTraceBase = (
     x_interaction_id: headers["x-interaction-id"] ?? null,
     x_initiator: headers["x-initiator"] ?? null,
     x_interaction_type: headers["x-interaction-type"] ?? null,
+    x_agent_task_id: headers["x-agent-task-id"] ?? null,
     has_vision: Boolean(options.vision),
     anthropic_beta: headers["anthropic-beta"] ?? null,
     subagent_marker_present: Boolean(options.subagentMarker),
