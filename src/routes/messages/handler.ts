@@ -23,6 +23,7 @@ import {
   translateResponsesResultToAnthropic,
 } from "~/routes/messages/responses-translation"
 import { getResponsesRequestOptions } from "~/routes/responses/utils"
+import { resolveAutoModelViaRouter } from "~/services/copilot/auto-model-router"
 import {
   createChatCompletions,
   type ChatCompletionChunk,
@@ -94,6 +95,51 @@ const resolveResponsesInitiator = (
   return initiator
 }
 
+async function resolveAutoModelSelection(
+  anthropicPayload: AnthropicMessagesPayload,
+): Promise<string> {
+  if (anthropicPayload.model !== "auto") return anthropicPayload.model
+
+  // Extract the last user/assistant text as routing prompt
+  const lastMsg = [...anthropicPayload.messages]
+    .reverse()
+    .find((m) => m.role === "user")
+
+  const routingPrompt = extractRoutingPrompt(lastMsg)
+  const routedModel =
+    routingPrompt.length > 0 ?
+      await resolveAutoModelViaRouter(routingPrompt)
+    : null
+
+  if (routedModel) {
+    consola.info(`[Auto] Router selected: ${routedModel}`)
+    return routedModel
+  } else {
+    const fallbackModel = resolveAutoModel(state.models?.data)
+    consola.info(`[Auto] Fallback resolved to: ${fallbackModel}`)
+    return fallbackModel
+  }
+}
+
+function extractRoutingPrompt(
+  msg: { role: "user"; content: string | Array<unknown> } | undefined,
+): string {
+  if (!msg) return ""
+  if (typeof msg.content === "string") return msg.content
+  if (Array.isArray(msg.content)) {
+    const blocks = msg.content as Array<{ type: string; text?: string }>
+    return blocks
+      .filter(
+        (b): b is { type: "text"; text: string } =>
+          b.type === "text" && typeof b.text === "string",
+      )
+      .map((b) => b.text)
+      .join(" ")
+      .slice(0, 500)
+  }
+  return ""
+}
+
 export async function handleCompletion(c: Context) {
   await checkRateLimit(state)
 
@@ -141,14 +187,9 @@ export async function handleCompletion(c: Context) {
     consola.info(`[Model] Mapped: ${originalModel} → ${anthropicPayload.model}`)
   }
 
-  const autoInModels = state.models?.data.some((m) => m.id === "auto")
-  if (anthropicPayload.model === "auto") {
-    if (autoInModels) {
-      consola.info("[Auto] Native → upstream will choose the model")
-    } else {
-      anthropicPayload.model = resolveAutoModel(state.models?.data)
-      consola.info(`[Auto] Resolved to: ${anthropicPayload.model}`)
-    }
+  const resolvedModel = await resolveAutoModelSelection(anthropicPayload)
+  if (resolvedModel !== anthropicPayload.model) {
+    anthropicPayload.model = resolvedModel
   }
 
   const initiator = inferAnthropicInitiatorFromLastMessage(anthropicPayload)
