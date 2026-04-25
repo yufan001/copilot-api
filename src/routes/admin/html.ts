@@ -371,13 +371,14 @@ export const adminHtml = `<!DOCTYPE html>
                 <th style="padding:0.4rem;">route</th>
                 <th style="padding:0.4rem;">model</th>
                 <th style="padding:0.4rem;">agent_type</th>
+                <th style="padding:0.4rem;">interaction</th>
                 <th style="padding:0.4rem; text-align:right;">body KB</th>
                 <th style="padding:0.4rem; text-align:right;">ms</th>
                 <th style="padding:0.4rem;">status</th>
                 <th style="padding:0.4rem; text-align:right;">prem rem</th>
               </tr>
             </thead>
-            <tbody id="traceRecentTable"><tr><td colspan="8" class="empty-state">Loading...</td></tr></tbody>
+            <tbody id="traceRecentTable"><tr><td colspan="9" class="empty-state">Loading...</td></tr></tbody>
           </table>
         </div>
       </div>
@@ -1041,7 +1042,7 @@ export const adminHtml = `<!DOCTYPE html>
       const rows = data.recent || [];
       const tbody = document.getElementById('traceRecentTable');
       if (rows.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="8" class="empty-state">No recent requests</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="9" class="empty-state">No recent requests</td></tr>';
         return;
       }
       const fmtTs = (ts) => {
@@ -1051,12 +1052,14 @@ export const adminHtml = `<!DOCTYPE html>
         const ss = String(d.getSeconds()).padStart(2, '0');
         return hh + ':' + mm + ':' + ss;
       };
+      const shortId = (id) => id ? id.slice(0, 8) : '-';
       tbody.innerHTML = rows.map(r =>
         '<tr style="border-bottom:1px solid #21262d;">' +
         '<td style="padding:0.4rem; font-family:monospace; color:#8b949e;">' + fmtTs(r.ts) + '</td>' +
         '<td style="padding:0.4rem; color:#8b949e;">' + escHtml(r.sourceRoute || '-') + '</td>' +
         '<td style="padding:0.4rem;"><code style="background:#21262d; padding:0.1rem 0.3rem; border-radius:3px; font-size:0.7rem;">' + escHtml(r.model || '-') + '</code></td>' +
         '<td style="padding:0.4rem;">' + (r.subagentAgentType ? '<span style="color:#9333ea;">' + escHtml(r.subagentAgentType) + '</span>' : '<span style="color:#8b949e;">-</span>') + '</td>' +
+        '<td style="padding:0.4rem; color:#8b949e;">' + shortId(r.xInteractionId) + '</td>' +
         '<td style="padding:0.4rem; text-align:right; color:#8b949e;">' + (r.bodySize / 1024).toFixed(1) + '</td>' +
         '<td style="padding:0.4rem; text-align:right; color:#8b949e;">' + (r.durationMs == null ? '-' : r.durationMs) + '</td>' +
         '<td style="padding:0.4rem; color:' + (r.status && r.status >= 400 ? '#f85149' : '#8b949e') + ';">' + (r.status == null ? 'err' : r.status) + '</td>' +
